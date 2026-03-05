@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>FlockTrack 🐔</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0f1e;font-family:'Segoe UI',sans-serif;font-size:18px;color:#e2e8f0}
+  input,select,textarea{font-family:inherit}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:#0f172a}
+  ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ── IndexedDB ──────────────────────────────────────────────────────────────
+const DB_NAME = "FlockTrackDB", DB_VERSION = 2;
+const STORES = ["eggBatches","birds","measurements","healthEvents","reminderRules","reminderInstances","eggStates"];
+
+function openDB(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(DB_NAME,DB_VERSION);
+    r.onupgradeneeded=e=>{const db=e.target.result;STORES.forEach(s=>{if(!db.objectStoreNames.contains(s))db.createObjectStore(s,{keyPath:"id"});});};
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+async function dbGetAll(store){const db=await openDB();return new Promise((res,rej)=>{const r=db.transaction(store,"readonly").objectStore(store).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function dbPut(store,item){const db=await openDB();return new Promise((res,rej)=>{const r=db.transaction(store,"readwrite").objectStore(store).put(item);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function dbDelete(store,id){const db=await openDB();return new Promise((res,rej)=>{const r=db.transaction(store,"readwrite").objectStore(store).delete(id);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const ageDays=d=>d?Math.floor((Date.now()-new Date(d).getTime())/86400000):null;
+const formatDate=d=>d?new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}):"—";
+const todayIso=()=>new Date().toISOString().slice(0,10);
+
+const BIRD_STAGES=["chick","pullet","grower","layer","broiler","rooster","retired"];
+const BIRD_STATUS=["active","sold","deceased","culled"];
+const METRIC_TYPES=["weight","length","egg_count","feed_intake","other"];
+const HEALTH_TYPES=["vaccination","deworming","treatment","injury","illness","checkup","other"];
+const REMINDER_KINDS=["weighing","vaccination","deworming","checkup","egg_collection","other"];
+const statusColor=s=>({active:"#4ade80",sold:"#facc15",deceased:"#f87171",culled:"#fb923c"}[s]||"#94a3b8");
+
+function exportCSV(data,filename){
+  if(!data.length)return;
+  const keys=Object.keys(data[0]);
+  const rows=[keys.join(","),...data.map(r=>keys.map(k=>JSON.stringify(r[k]??'')).join(","))];
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([rows.join("\n")],{type:"text/csv"}));
+  a.download=filename; a.click();
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────
+const S={
+  page:{minHeight:"100dvh",background:"#0a0f1e",color:"#e2e8f0",paddingBottom:80},
+  topBar:{background:"#0f172a",borderBottom:"1px solid #1e293b",padding:"14px 18px",display:"flex",alignItems:"center",gap:12,position:"sticky",top:0,zIndex:50},
+  topTitle:{fontSize:22,fontWeight:800,color:"#f59e0b",flex:1,letterSpacing:"-0.5px"},
+  bottomNav:{position:"fixed",bottom:0,left:0,right:0,background:"#0f172a",borderTop:"1px solid #1e293b",display:"flex",zIndex:50},
+  navBtn:a=>({flex:1,padding:"12px 4px 10px",border:"none",background:"none",color:a?"#f59e0b":"#475569",fontSize:11,fontWeight:a?800:600,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3}),
+  card:{background:"#0f172a",border:"1px solid #1e293b",borderRadius:14,padding:18,marginBottom:14},
+  badge:c=>({display:"inline-block",background:c+"22",color:c,border:`1px solid ${c}55`,borderRadius:999,padding:"2px 10px",fontSize:13,fontWeight:700}),
+  input:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"13px 14px",color:"#f1f5f9",fontSize:18,outline:"none"},
+  select:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"13px 14px",color:"#f1f5f9",fontSize:18,outline:"none"},
+  textarea:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"13px 14px",color:"#f1f5f9",fontSize:18,outline:"none",minHeight:80,resize:"vertical"},
+  btnPrimary:{background:"#f59e0b",color:"#0a0f1e",border:"none",borderRadius:12,padding:"15px 28px",fontSize:18,fontWeight:800,cursor:"pointer",width:"100%",marginTop:18,minHeight:52},
+  btnSec:{background:"transparent",color:"#94a3b8",border:"1px solid #334155",borderRadius:12,padding:"12px 18px",fontSize:16,fontWeight:700,cursor:"pointer"},
+  btnSm:{background:"#1e293b",color:"#94a3b8",border:"1px solid #334155",borderRadius:8,padding:"8px 14px",fontSize:14,fontWeight:700,cursor:"pointer"},
+  btnDanger:{background:"#dc262622",color:"#f87171",border:"1px solid #dc262644",borderRadius:10,padding:"10px 18px",fontSize:15,fontWeight:700,cursor:"pointer"},
+  content:{padding:"16px 16px 0"},
+  fieldLabel:{display:"block",fontSize:15,color:"#94a3b8",fontWeight:700,marginBottom:6,marginTop:16},
+  divider:{borderTop:"1px solid #1e293b",margin:"14px 0"},
+  label:{fontSize:13,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px"},
+  val:{fontSize:18,color:"#e2e8f0",marginTop:2},
+};
+
+const F=({label,children})=><div><label style={S.fieldLabel}>{label}</label>{children}</div>;
+
+function Modal({title,onClose,children}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"#00000090",zIndex:200,overflowY:"auto"}}>
+      <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:18,margin:"20px 12px 100px",padding:20}}>
+        <div style={{display:"flex",alignItems:"center",marginBottom:18}}>
+          <span style={{fontSize:22,fontWeight:800,color:"#f1f5f9",flex:1}}>{title}</span>
+          <button onClick={onClose} style={S.btnSec}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Empty({icon,text}){
+  return <div style={{textAlign:"center",padding:"40px 20px",color:"#475569"}}>
+    <div style={{fontSize:48,marginBottom:12}}>{icon}</div>
+    <div style={{fontSize:17,fontWeight:600}}>{text}</div>
+  </div>;
+}
+
+function LineChart({data,width=320,height=140}){
+  if(!data||data.length<2)return <div style={{height,display:"flex",alignItems:"center",justifyContent:"center",color:"#64748b",fontSize:15}}>Need at least 2 data points</div>;
+  const vals=data.map(d=>d.value);
+  const minV=Math.min(...vals),maxV=Math.max(...vals);
+  const pad=32;
+  const xs=i=>pad+(i/(data.length-1))*(width-pad*2);
+  const ys=v=>maxV===minV?height/2:pad+((maxV-v)/(maxV-minV))*(height-pad*2);
+  const pts=data.map((d,i)=>`${xs(i)},${ys(d.value)}`).join(" ");
+  return(
+    <svg viewBox={`0 0 ${width} ${height}`} style={{width:"100%",height:"auto",display:"block"}}>
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f59e0b" stopOpacity="0.25"/><stop offset="100%" stopColor="#f59e0b" stopOpacity="0"/></linearGradient></defs>
+      {[0.25,0.5,0.75].map((t,i)=><line key={i} x1={pad} x2={width-pad} y1={pad+t*(height-pad*2)} y2={pad+t*(height-pad*2)} stroke="#1e293b" strokeWidth="1"/>)}
+      <polygon points={`${xs(0)},${height-pad} ${pts} ${xs(data.length-1)},${height-pad}`} fill="url(#g)"/>
+      <polyline points={pts} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>
+      {data.map((d,i)=><circle key={i} cx={xs(i)} cy={ys(d.value)} r="4.5" fill="#f59e0b" stroke="#0f172a" strokeWidth="2"/>)}
+      <text x={pad} y={height-6} fontSize="10" fill="#475569">{formatDate(data[0].date)}</text>
+      <text x={width-pad} y={height-6} fontSize="10" fill="#475569" textAnchor="end">{formatDate(data[data.length-1].date)}</text>
+      <text x={pad-4} y={ys(minV)+4} fontSize="10" fill="#64748b" textAnchor="end">{minV}</text>
+      <text x={pad-4} y={ys(maxV)+4} fontSize="10" fill="#64748b" textAnchor="end">{maxV}</text>
+    </svg>
+  );
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard({birds,batches,measurements,reminders}){
+  const active=birds.filter(b=>b.status==="active");
+  const overdue=reminders.filter(r=>r.status==="pending"&&new Date(r.dueAt)<new Date());
+  const dueToday=reminders.filter(r=>r.status==="pending"&&new Date(r.dueAt).toDateString()===new Date().toDateString());
+  const recent=[...measurements].sort((a,b)=>new Date(b.measuredAt)-new Date(a.measuredAt)).slice(0,5);
+  return(
+    <div style={S.content}>
+      <div style={{padding:"20px 0 12px"}}>
+        <div style={{fontSize:26,fontWeight:900,color:"#f59e0b"}}>🐔 Flock Overview</div>
+        <div style={{color:"#475569",fontSize:15,marginTop:2}}>{formatDate(new Date())}</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+        {[{l:"Active Birds",v:active.length,icon:"🐓",c:"#4ade80"},{l:"Batches",v:batches.length,icon:"🥚",c:"#60a5fa"},{l:"Overdue",v:overdue.length,icon:"⚠️",c:"#f87171"},{l:"Due Today",v:dueToday.length,icon:"📅",c:"#facc15"}].map(st=>(
+          <div key={st.l} style={{...S.card,marginBottom:0}}>
+            <div style={{fontSize:26,marginBottom:4}}>{st.icon}</div>
+            <div style={{fontSize:30,fontWeight:900,color:st.c}}>{st.v}</div>
+            <div style={{fontSize:13,color:"#64748b",fontWeight:700,marginTop:2}}>{st.l}</div>
+          </div>
+        ))}
+      </div>
+      {overdue.length>0&&(
+        <div style={{...S.card,borderColor:"#dc262644",background:"#dc262608",marginBottom:14}}>
+          <div style={{fontSize:18,fontWeight:800,color:"#f87171",marginBottom:10}}>⚠️ Overdue ({overdue.length})</div>
+          {overdue.slice(0,4).map(r=>{const bird=birds.find(b=>b.id===r.birdId);return(
+            <div key={r.id} style={{padding:"6px 0",borderBottom:"1px solid #1e293b",fontSize:16}}>
+              <span style={{color:"#f87171",fontWeight:700}}>{bird?.tagId||"?"}</span>
+              <span style={{color:"#64748b"}}> — {r.kind} — {formatDate(r.dueAt)}</span>
+            </div>
+          );})}
+        </div>
+      )}
+      {recent.length>0&&(
+        <div style={S.card}>
+          <div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:10}}>📊 Recent Measurements</div>
+          {recent.map(m=>{const bird=birds.find(b=>b.id===m.birdId);return(
+            <div key={m.id} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #1e293b",fontSize:16}}>
+              <span style={{color:"#94a3b8"}}>{bird?.tagId||"?"} · {m.metricType}</span>
+              <span style={{color:"#f59e0b",fontWeight:800}}>{m.value} {m.unit}</span>
+            </div>
+          );})}
+        </div>
+      )}
+      {birds.length===0&&batches.length===0&&<Empty icon="🥚" text="Start by adding an egg batch or a bird"/>}
+    </div>
+  );
+}
+
+// ── Egg Grid helpers ──────────────────────────────────────────────────────────
+function nextBatchCode(batches){
+  // find highest B-number used so far and increment
+  let max=0;
+  batches.forEach(b=>{const m=b.batchCode.match(/B(\d+)/i);if(m)max=Math.max(max,parseInt(m[1]));});
+  return `B${String(max+1).padStart(3,"0")}`;
+}
+function eggCode(batchCode,idx){
+  // C-B001-001
+  const m=batchCode.match(/B(\d+)/i);
+  const bNum=m?m[1].padStart(3,"0"):"000";
+  return `C-B${bNum}-${String(idx+1).padStart(3,"0")}`;
+}
+
+// ── Egg Batches ──────────────────────────────────────────────────────────────
+function EggBatches({batches,birds,eggStates,onAdd,onUpdate,onHatch,onDelete,onSaveEggState}){
+  const [showForm,setShowForm]=useState(false);
+  const [editBatch,setEditBatch]=useState(null);   // batch being edited
+  const [gridBatch,setGridBatch]=useState(null);
+  const [eggAction,setEggAction]=useState(null);
+  const [hf,setHf]=useState({breed:"",sex:"unknown",hatchDate:todayIso(),notes:""});
+  const [failNote,setFailNote]=useState("");
+  const [form,setForm]=useState({collectedDate:todayIso(),eggCount:"",notes:""});
+  const [editForm,setEditForm]=useState({collectedDate:"",eggCount:"",notes:""});
+
+  function openNew(){
+    setForm({collectedDate:todayIso(),eggCount:"",notes:""});
+    setShowForm(true);
+  }
+
+  function saveBatch(){
+    if(!form.eggCount)return;
+    const batchCode=nextBatchCode(batches);
+    onAdd({id:uid(),batchCode,collectedDate:form.collectedDate,eggCount:parseInt(form.eggCount),notes:form.notes,createdAt:new Date().toISOString()});
+    setShowForm(false);
+  }
+
+  function openEdit(e,b){
+    e.stopPropagation();
+    setEditForm({collectedDate:b.collectedDate,eggCount:String(b.eggCount),notes:b.notes||""});
+    setEditBatch(b);
+  }
+
+  function saveEdit(){
+    if(!editForm.eggCount)return;
+    onUpdate({...editBatch,collectedDate:editForm.collectedDate,eggCount:parseInt(editForm.eggCount),notes:editForm.notes});
+    setEditBatch(null);
+  }
+
+  function openEgg(egg){
+    // egg = {code, batchId, idx}
+    const state=eggStates.find(s=>s.id===egg.code);
+    if(state) return; // already resolved — no re-action
+    setEggAction({egg, mode:null});
+    setHf({breed:"",sex:"unknown",hatchDate:todayIso(),notes:""});
+    setFailNote("");
+  }
+
+  function confirmHatch(){
+    const {egg}=eggAction;
+    const bird={id:uid(),tagId:egg.code,originBatchId:egg.batchId,hatchDate:hf.hatchDate,stage:"chick",breed:hf.breed,sex:hf.sex,status:"active",notes:hf.notes,createdAt:new Date().toISOString()};
+    onHatch(bird);
+    onSaveEggState({id:egg.code,batchId:egg.batchId,idx:egg.idx,status:"hatched",birdId:bird.id,date:hf.hatchDate,note:""});
+    setEggAction(null);
+  }
+
+  function confirmFail(){
+    const {egg}=eggAction;
+    onSaveEggState({id:egg.code,batchId:egg.batchId,idx:egg.idx,status:"failed",birdId:null,date:todayIso(),note:failNote});
+    setEggAction(null);
+  }
+
+  // Egg cell visual
+  function EggCell({egg,state}){
+    const isHatched=state?.status==="hatched";
+    const isFailed=state?.status==="failed";
+    const border=isHatched?"2px solid #4ade80":isFailed?"2px solid #f87171":"2px solid #334155";
+    const bg=isHatched?"#4ade8018":isFailed?"#f8717118":"#1e293b";
+    return(
+      <div onClick={()=>openEgg(egg)}
+        style={{background:bg,border,borderRadius:12,padding:"10px 4px 8px",display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:state?"default":"pointer",minWidth:0,userSelect:"none"}}>
+        <span style={{fontSize:26,lineHeight:1}}>
+          {isHatched?"🐣":isFailed?"💀":"🥚"}
+        </span>
+        <span style={{fontSize:10,color:isHatched?"#4ade80":isFailed?"#f87171":"#64748b",fontWeight:700,textAlign:"center",wordBreak:"break-all",lineHeight:1.2}}>
+          {egg.code.split("-").slice(1).join("-")}
+        </span>
+        {isHatched&&<span style={{fontSize:9,color:"#4ade8099"}}>hatched</span>}
+        {isFailed&&<span style={{fontSize:9,color:"#f8717199"}}>failed</span>}
+      </div>
+    );
+  }
+
+  return(
+    <div style={S.content}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"20px 0 14px"}}>
+        <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9"}}>🥚 Egg Batches</div>
+        <button style={{...S.btnPrimary,width:"auto",marginTop:0,padding:"12px 20px"}} onClick={openNew}>+ New</button>
+      </div>
+      {batches.length===0&&<Empty icon="🥚" text="No batches yet"/>}
+      {batches.map(b=>{
+        const hatched=eggStates.filter(s=>s.batchId===b.id&&s.status==="hatched").length;
+        const failed=eggStates.filter(s=>s.batchId===b.id&&s.status==="failed").length;
+        const age=Math.floor((Date.now()-new Date(b.collectedDate).getTime())/86400000);
+        return(
+          <div key={b.id} style={{...S.card,cursor:"pointer"}} onClick={()=>setGridBatch(b)}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:20,fontWeight:800,color:"#f59e0b"}}>{b.batchCode}</div>
+                <div style={{color:"#64748b",fontSize:15,marginTop:2}}>Collected {formatDate(b.collectedDate)} · {age}d ago</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:28,fontWeight:900,color:"#60a5fa"}}>{b.eggCount}</div>
+                <div style={{fontSize:13,color:"#64748b"}}>eggs</div>
+              </div>
+            </div>
+            {b.notes&&<div style={{color:"#94a3b8",marginTop:8,fontSize:15}}>{b.notes}</div>}
+            <div style={S.divider}/>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:14,color:"#4ade80",fontWeight:700}}>🐣 {hatched}</span>
+              <span style={{fontSize:14,color:"#f87171",fontWeight:700}}>💀 {failed}</span>
+              <span style={{fontSize:14,color:"#64748b"}}>🥚 {b.eggCount-hatched-failed} pending</span>
+              <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+                <button style={{...S.btnSm,color:"#60a5fa",borderColor:"#60a5fa44"}} onClick={e=>openEdit(e,b)}>✎ Edit</button>
+                <button style={S.btnDanger} onClick={e=>{e.stopPropagation();onDelete(b.id);}}>Delete</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* ── New Batch Form ── */}
+      {showForm&&(
+        <Modal title={`New Batch · ${nextBatchCode(batches)}`} onClose={()=>setShowForm(false)}>
+          <div style={{...S.badge("#60a5fa"),marginBottom:4,fontSize:15}}>Auto-code: {nextBatchCode(batches)}</div>
+          <div style={{color:"#64748b",fontSize:14,marginBottom:2}}>
+            {form.eggCount?`Eggs: ${eggCode(nextBatchCode(batches),0)} → ${eggCode(nextBatchCode(batches),parseInt(form.eggCount)-1)}`:"Enter egg count to preview codes"}
+          </div>
+          <F label="Collection Date"><input style={S.input} type="date" value={form.collectedDate} onChange={e=>setForm({...form,collectedDate:e.target.value})}/></F>
+          <F label="Egg Count *"><input style={S.input} type="number" value={form.eggCount} onChange={e=>setForm({...form,eggCount:e.target.value})} min="1" placeholder="e.g. 12"/></F>
+          <F label="Notes"><textarea style={S.textarea} value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Optional"/></F>
+          <button style={S.btnPrimary} onClick={saveBatch}>Save Batch</button>
+        </Modal>
+      )}
+
+      {/* ── Edit Batch Modal ── */}
+      {editBatch&&(
+        <Modal title={`Edit ${editBatch.batchCode}`} onClose={()=>setEditBatch(null)}>
+          <div style={{...S.badge("#f59e0b"),marginBottom:8}}>Batch code: {editBatch.batchCode}</div>
+          <F label="Collection Date"><input style={S.input} type="date" value={editForm.collectedDate} onChange={e=>setEditForm({...editForm,collectedDate:e.target.value})}/></F>
+          <F label="Egg Count">
+            <input style={S.input} type="number" value={editForm.eggCount} onChange={e=>setEditForm({...editForm,eggCount:e.target.value})} min="1"/>
+            {parseInt(editForm.eggCount)<editBatch.eggCount&&<div style={{color:"#facc15",fontSize:13,marginTop:6}}>⚠️ Reducing count hides eggs beyond the new count — existing states are preserved.</div>}
+          </F>
+          <F label="Notes"><textarea style={S.textarea} value={editForm.notes} onChange={e=>setEditForm({...editForm,notes:e.target.value})}/></F>
+          <button style={S.btnPrimary} onClick={saveEdit}>Save Changes</button>
+        </Modal>
+      )}
+
+      {/* ── Egg Grid Modal ── */}
+      {gridBatch&&(
+        <div style={{position:"fixed",inset:0,background:"#000000b0",zIndex:200,overflowY:"auto"}}>
+          <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:18,margin:"16px 10px 90px",padding:18}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:6}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:22,fontWeight:900,color:"#f59e0b"}}>{gridBatch.batchCode}</div>
+                <div style={{fontSize:14,color:"#64748b",marginTop:2}}>
+                  {gridBatch.eggCount} eggs · collected {formatDate(gridBatch.collectedDate)}
+                </div>
+              </div>
+              <button onClick={()=>setGridBatch(null)} style={S.btnSec}>✕</button>
+            </div>
+            {/* legend */}
+            <div style={{display:"flex",gap:14,marginBottom:14,marginTop:8,flexWrap:"wrap"}}>
+              {[["🥚","Pending","#64748b"],["🐣","Hatched","#4ade80"],["💀","Failed","#f87171"]].map(([ic,lb,cl])=>(
+                <span key={lb} style={{fontSize:13,color:cl,fontWeight:700}}>{ic} {lb}</span>
+              ))}
+            </div>
+            {/* 5-column grid */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+              {Array.from({length:gridBatch.eggCount},(_,i)=>{
+                const code=eggCode(gridBatch.batchCode,i);
+                const state=eggStates.find(s=>s.id===code);
+                return <EggCell key={code} egg={{code,batchId:gridBatch.id,idx:i}} state={state}/>;
+              })}
+            </div>
+            {/* stats bar */}
+            <div style={{marginTop:16,display:"flex",gap:14,padding:"12px 0",borderTop:"1px solid #1e293b",flexWrap:"wrap"}}>
+              {(()=>{
+                const h=eggStates.filter(s=>s.batchId===gridBatch.id&&s.status==="hatched").length;
+                const f=eggStates.filter(s=>s.batchId===gridBatch.id&&s.status==="failed").length;
+                return[
+                  <span key="h" style={{fontSize:14,color:"#4ade80",fontWeight:700}}>🐣 {h} hatched</span>,
+                  <span key="f" style={{fontSize:14,color:"#f87171",fontWeight:700}}>💀 {f} failed</span>,
+                  <span key="p" style={{fontSize:14,color:"#64748b"}}>🥚 {gridBatch.eggCount-h-f} pending</span>,
+                ];
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Egg Action Modal (tap an egg) ── */}
+      {eggAction&&(
+        <div style={{position:"fixed",inset:0,background:"#000000c0",zIndex:300,display:"flex",alignItems:"flex-end"}}>
+          <div style={{background:"#0f172a",border:"1px solid #1e293b",borderTopLeftRadius:20,borderTopRightRadius:20,width:"100%",padding:20,paddingBottom:36}}>
+            <div style={{textAlign:"center",marginBottom:4}}>
+              <div style={{fontSize:40}}>🥚</div>
+              <div style={{fontSize:20,fontWeight:900,color:"#f59e0b",marginTop:4}}>{eggAction.egg.code}</div>
+              <div style={{fontSize:14,color:"#64748b",marginTop:2}}>What happened to this egg?</div>
+            </div>
+
+            {/* Mode selector */}
+            {!eggAction.mode&&(
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:20}}>
+                <button onClick={()=>setEggAction({...eggAction,mode:"hatch"})}
+                  style={{background:"#4ade8018",border:"2px solid #4ade8055",borderRadius:14,padding:"18px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:36}}>🐣</span>
+                  <span style={{fontSize:17,fontWeight:800,color:"#4ade80"}}>Hatched ✓</span>
+                </button>
+                <button onClick={()=>setEggAction({...eggAction,mode:"fail"})}
+                  style={{background:"#f8717118",border:"2px solid #f8717155",borderRadius:14,padding:"18px 10px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:36}}>💀</span>
+                  <span style={{fontSize:17,fontWeight:800,color:"#f87171"}}>Failed ✗</span>
+                </button>
+              </div>
+            )}
+
+            {/* Hatch form */}
+            {eggAction.mode==="hatch"&&(
+              <div style={{marginTop:16}}>
+                <F label="Hatch Date"><input style={S.input} type="date" value={hf.hatchDate} onChange={e=>setHf({...hf,hatchDate:e.target.value})}/></F>
+                <F label="Breed"><input style={S.input} value={hf.breed} onChange={e=>setHf({...hf,breed:e.target.value})} placeholder="e.g. Rhode Island Red"/></F>
+                <F label="Sex"><select style={S.select} value={hf.sex} onChange={e=>setHf({...hf,sex:e.target.value})}>
+                  {["unknown","female","male"].map(x=><option key={x} value={x}>{x}</option>)}
+                </select></F>
+                <F label="Notes"><textarea style={S.textarea} value={hf.notes} onChange={e=>setHf({...hf,notes:e.target.value})} placeholder="Optional notes..."/></F>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:18}}>
+                  <button style={{...S.btnSec,width:"100%"}} onClick={()=>setEggAction({...eggAction,mode:null})}>← Back</button>
+                  <button style={{...S.btnPrimary,marginTop:0}} onClick={confirmHatch}>🐣 Confirm Hatch</button>
+                </div>
+              </div>
+            )}
+
+            {/* Fail form */}
+            {eggAction.mode==="fail"&&(
+              <div style={{marginTop:16}}>
+                <F label="Reason / Note"><textarea style={S.textarea} value={failNote} onChange={e=>setFailNote(e.target.value)} placeholder="e.g. Infertile, cracked, died in shell..."/></F>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:18}}>
+                  <button style={{...S.btnSec,width:"100%"}} onClick={()=>setEggAction({...eggAction,mode:null})}>← Back</button>
+                  <button style={{background:"#f87171",color:"#0a0f1e",border:"none",borderRadius:12,padding:"15px",fontSize:17,fontWeight:800,cursor:"pointer"}} onClick={confirmFail}>💀 Mark Failed</button>
+                </div>
+              </div>
+            )}
+
+            <button onClick={()=>setEggAction(null)} style={{...S.btnSec,width:"100%",marginTop:12,textAlign:"center"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Birds ────────────────────────────────────────────────────────────────────
+function Birds({birds,batches,measurements,healthEvents,onAdd,onUpdate,onDelete,onAddM,onAddH}){
+  const [sel,setSel]=useState(null);
+  const [subTab,setSubTab]=useState("info");
+  const [showForm,setShowForm]=useState(false);
+  const [filter,setFilter]=useState("active");
+  const [bf,setBf]=useState({tagId:"",hatchDate:"",stage:"chick",breed:"",sex:"unknown",status:"active",notes:""});
+  const [mf,setMf]=useState({metricType:"weight",value:"",unit:"kg",measuredAt:todayIso(),notes:""});
+  const [hf,setHf]=useState({eventType:"checkup",eventDate:todayIso(),details:"",medication:"",dose:"",outcome:""});
+
+  const visible=filter==="all"?birds:birds.filter(b=>b.status===filter);
+
+  // re-sync sel if updated externally
+  useEffect(()=>{if(sel){const updated=birds.find(b=>b.id===sel.id);if(updated)setSel(updated);}});
+
+  if(sel){
+    const bms=measurements.filter(m=>m.birdId===sel.id).sort((a,b)=>new Date(a.measuredAt)-new Date(b.measuredAt));
+    const bhs=healthEvents.filter(h=>h.birdId===sel.id).sort((a,b)=>new Date(b.eventDate)-new Date(a.eventDate));
+    const wtData=bms.filter(m=>m.metricType==="weight").map(m=>({value:m.value,date:m.measuredAt}));
+    const srcBatch=batches.find(b=>b.id===sel.originBatchId);
+    return(
+      <div style={S.content}>
+        <button style={{...S.btnSec,marginTop:16,marginBottom:4}} onClick={()=>setSel(null)}>← Back</button>
+        <div style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:28,fontWeight:900,color:"#f59e0b"}}>{sel.tagId}</div>
+              <div style={{color:"#64748b",fontSize:16}}>{sel.breed||"No breed"} · {sel.sex}</div>
+            </div>
+            <div style={S.badge(statusColor(sel.status))}>{sel.status}</div>
+          </div>
+          <div style={S.divider}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            {[["Stage",sel.stage],["Age",sel.hatchDate?`${ageDays(sel.hatchDate)}d`:"—"],["Hatched",formatDate(sel.hatchDate)],["Batch",srcBatch?.batchCode||"—"]].map(([l,v])=>(
+              <div key={l}><div style={S.label}>{l}</div><div style={S.val}>{v}</div></div>
+            ))}
+          </div>
+          {sel.notes&&<div style={{marginTop:10,color:"#94a3b8",fontSize:15}}>{sel.notes}</div>}
+          <div style={{marginTop:14,display:"flex",gap:8,flexWrap:"wrap"}}>
+            {BIRD_STATUS.map(st=><button key={st} style={{...S.btnSm,color:sel.status===st?"#f59e0b":"#94a3b8",borderColor:sel.status===st?"#f59e0b44":"#334155",textTransform:"capitalize"}} onClick={()=>onUpdate({...sel,status:st})}>{st}</button>)}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+          {["info","measurements","health","chart"].map(t=><button key={t} style={{...S.btnSm,color:subTab===t?"#f59e0b":"#94a3b8",borderColor:subTab===t?"#f59e0b44":"#334155",textTransform:"capitalize"}} onClick={()=>setSubTab(t)}>{t}</button>)}
+        </div>
+
+        {subTab==="info"&&(
+          <div style={S.card}>
+            <div style={{fontSize:17,fontWeight:700,color:"#f1f5f9",marginBottom:10}}>Update Stage</div>
+            <select style={S.select} value={sel.stage} onChange={e=>onUpdate({...sel,stage:e.target.value})}>
+              {BIRD_STAGES.map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+            <div style={{marginTop:16}}><button style={S.btnDanger} onClick={()=>{onDelete(sel.id);setSel(null);}}>Delete Bird</button></div>
+          </div>
+        )}
+
+        {subTab==="measurements"&&(
+          <div>
+            <div style={S.card}>
+              <div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:8}}>Add Measurement</div>
+              <F label="Metric"><select style={S.select} value={mf.metricType} onChange={e=>setMf({...mf,metricType:e.target.value})}>{METRIC_TYPES.map(m=><option key={m} value={m}>{m}</option>)}</select></F>
+              <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10}}>
+                <F label="Value"><input style={S.input} type="number" value={mf.value} onChange={e=>setMf({...mf,value:e.target.value})} step="0.01"/></F>
+                <F label="Unit"><input style={S.input} value={mf.unit} onChange={e=>setMf({...mf,unit:e.target.value})} placeholder="kg"/></F>
+              </div>
+              <F label="Date"><input style={S.input} type="date" value={mf.measuredAt} onChange={e=>setMf({...mf,measuredAt:e.target.value})}/></F>
+              <F label="Notes"><input style={S.input} value={mf.notes} onChange={e=>setMf({...mf,notes:e.target.value})} placeholder="Optional"/></F>
+              <button style={S.btnPrimary} onClick={()=>{if(!mf.value)return;onAddM({id:uid(),birdId:sel.id,metricType:mf.metricType,value:parseFloat(mf.value),unit:mf.unit,measuredAt:mf.measuredAt,ageDays:ageDays(sel.hatchDate),notes:mf.notes});setMf({metricType:"weight",value:"",unit:"kg",measuredAt:todayIso(),notes:""});}}>Save</button>
+            </div>
+            {bms.length===0&&<Empty icon="📏" text="No measurements yet"/>}
+            {[...bms].reverse().map(m=>(
+              <div key={m.id} style={S.card}>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <div><div style={{fontSize:17,fontWeight:700,color:"#f1f5f9"}}>{m.metricType}</div><div style={{color:"#64748b",fontSize:14}}>{formatDate(m.measuredAt)}{m.ageDays!=null?` · ${m.ageDays}d`:""}</div></div>
+                  <div style={{fontSize:22,fontWeight:900,color:"#f59e0b"}}>{m.value} <span style={{fontSize:14,color:"#64748b"}}>{m.unit}</span></div>
+                </div>
+                {m.notes&&<div style={{color:"#94a3b8",fontSize:14,marginTop:6}}>{m.notes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {subTab==="health"&&(
+          <div>
+            <div style={S.card}>
+              <div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:8}}>Log Health Event</div>
+              <F label="Type"><select style={S.select} value={hf.eventType} onChange={e=>setHf({...hf,eventType:e.target.value})}>{HEALTH_TYPES.map(h=><option key={h} value={h}>{h}</option>)}</select></F>
+              <F label="Date"><input style={S.input} type="date" value={hf.eventDate} onChange={e=>setHf({...hf,eventDate:e.target.value})}/></F>
+              <F label="Details *"><textarea style={S.textarea} value={hf.details} onChange={e=>setHf({...hf,details:e.target.value})} placeholder="Describe the event..."/></F>
+              <F label="Medication"><input style={S.input} value={hf.medication} onChange={e=>setHf({...hf,medication:e.target.value})}/></F>
+              <F label="Dose"><input style={S.input} value={hf.dose} onChange={e=>setHf({...hf,dose:e.target.value})}/></F>
+              <F label="Outcome"><input style={S.input} value={hf.outcome} onChange={e=>setHf({...hf,outcome:e.target.value})}/></F>
+              <button style={S.btnPrimary} onClick={()=>{if(!hf.details)return;onAddH({id:uid(),birdId:sel.id,...hf});setHf({eventType:"checkup",eventDate:todayIso(),details:"",medication:"",dose:"",outcome:""});}}>Save</button>
+            </div>
+            {bhs.length===0&&<Empty icon="🩺" text="No health events yet"/>}
+            {bhs.map(h=>(
+              <div key={h.id} style={S.card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                  <div style={{fontSize:17,fontWeight:700,color:"#f1f5f9"}}>{h.eventType}</div>
+                  <div style={{color:"#64748b",fontSize:14}}>{formatDate(h.eventDate)}</div>
+                </div>
+                <div style={{color:"#94a3b8",marginTop:6,fontSize:15}}>{h.details}</div>
+                {h.medication&&<div style={{marginTop:6,fontSize:14}}><span style={{color:"#64748b"}}>Med: </span><span style={{color:"#e2e8f0"}}>{h.medication} {h.dose}</span></div>}
+                {h.outcome&&<div style={{marginTop:4,fontSize:14}}><span style={{color:"#64748b"}}>Outcome: </span><span style={{color:"#4ade80"}}>{h.outcome}</span></div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {subTab==="chart"&&(
+          <div style={S.card}>
+            <div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:14}}>📈 Weight Growth</div>
+            <LineChart data={wtData}/>
+            {wtData.length>=2&&(
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:14,paddingTop:14,borderTop:"1px solid #1e293b"}}>
+                <div><div style={S.label}>First</div><div style={{...S.val,color:"#60a5fa"}}>{wtData[0].value}</div></div>
+                <div><div style={S.label}>Latest</div><div style={{...S.val,color:"#4ade80"}}>{wtData[wtData.length-1].value}</div></div>
+                <div><div style={S.label}>Points</div><div style={S.val}>{wtData.length}</div></div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return(
+    <div style={S.content}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"20px 0 14px"}}>
+        <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9"}}>🐓 Birds</div>
+        <button style={{...S.btnPrimary,width:"auto",marginTop:0,padding:"12px 20px"}} onClick={()=>setShowForm(true)}>+ Add</button>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        {["active","all",...BIRD_STATUS.slice(1)].map(f=><button key={f} style={{...S.btnSm,color:filter===f?"#f59e0b":"#94a3b8",borderColor:filter===f?"#f59e0b44":"#334155",textTransform:"capitalize"}} onClick={()=>setFilter(f)}>{f}</button>)}
+      </div>
+      {visible.length===0&&<Empty icon="🐣" text="No birds here"/>}
+      {visible.map(b=>{
+        const lw=measurements.filter(m=>m.birdId===b.id&&m.metricType==="weight").sort((a,c)=>new Date(c.measuredAt)-new Date(a.measuredAt))[0];
+        const sb=batches.find(bt=>bt.id===b.originBatchId);
+        return(
+          <div key={b.id} style={{...S.card,cursor:"pointer"}} onClick={()=>{setSel(b);setSubTab("info");}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:20,fontWeight:800,color:"#f1f5f9"}}>{b.tagId}</div>
+                <div style={{color:"#64748b",fontSize:15,marginTop:2}}>{b.breed||"No breed"} · {b.stage} · {b.sex}</div>
+                {sb&&<div style={{color:"#475569",fontSize:13,marginTop:2}}>from {sb.batchCode}</div>}
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={S.badge(statusColor(b.status))}>{b.status}</div>
+                {lw&&<div style={{marginTop:8,fontSize:18,fontWeight:800,color:"#f59e0b"}}>{lw.value} {lw.unit}</div>}
+                {b.hatchDate&&<div style={{fontSize:13,color:"#64748b"}}>{ageDays(b.hatchDate)}d old</div>}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {showForm&&(
+        <Modal title="Add Bird" onClose={()=>setShowForm(false)}>
+          <F label="Tag ID *"><input style={S.input} value={bf.tagId} onChange={e=>setBf({...bf,tagId:e.target.value})} placeholder="e.g. B-001"/></F>
+          <F label="Hatch Date"><input style={S.input} type="date" value={bf.hatchDate} onChange={e=>setBf({...bf,hatchDate:e.target.value})}/></F>
+          <F label="Breed"><input style={S.input} value={bf.breed} onChange={e=>setBf({...bf,breed:e.target.value})}/></F>
+          <F label="Stage"><select style={S.select} value={bf.stage} onChange={e=>setBf({...bf,stage:e.target.value})}>{BIRD_STAGES.map(s=><option key={s} value={s}>{s}</option>)}</select></F>
+          <F label="Sex"><select style={S.select} value={bf.sex} onChange={e=>setBf({...bf,sex:e.target.value})}>{["unknown","female","male"].map(x=><option key={x} value={x}>{x}</option>)}</select></F>
+          <F label="Notes"><textarea style={S.textarea} value={bf.notes} onChange={e=>setBf({...bf,notes:e.target.value})}/></F>
+          <button style={S.btnPrimary} onClick={()=>{if(!bf.tagId)return;onAdd({id:uid(),...bf,createdAt:new Date().toISOString()});setBf({tagId:"",hatchDate:"",stage:"chick",breed:"",sex:"unknown",status:"active",notes:""});setShowForm(false);}}>Save Bird</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── Reminders ────────────────────────────────────────────────────────────────
+function Reminders({birds,reminders,rules,onAddRule,onComplete,onDeleteRule}){
+  const [showForm,setShowForm]=useState(false);
+  const [rf,setRf]=useState({birdId:"",kind:"weighing",cadenceDays:"7"});
+  const overdue=reminders.filter(r=>r.status==="pending"&&new Date(r.dueAt)<new Date());
+  const upcoming=reminders.filter(r=>r.status==="pending"&&new Date(r.dueAt)>=new Date()).sort((a,b)=>new Date(a.dueAt)-new Date(b.dueAt));
+  const done=reminders.filter(r=>r.status==="done").sort((a,b)=>new Date(b.dueAt)-new Date(a.dueAt)).slice(0,8);
+
+  function saveRule(){
+    if(!rf.birdId)return;
+    const rule={id:uid(),birdId:rf.birdId,kind:rf.kind,cadenceDays:parseInt(rf.cadenceDays),active:true};
+    onAddRule(rule);
+    const inst={id:uid(),birdId:rf.birdId,kind:rf.kind,dueAt:new Date(Date.now()+parseInt(rf.cadenceDays)*86400000).toISOString(),status:"pending",ruleId:rule.id};
+    onComplete(inst,false);
+    setRf({birdId:"",kind:"weighing",cadenceDays:"7"});setShowForm(false);
+  }
+
+  const RC=({r,canComplete})=>{
+    const bird=birds.find(b=>b.id===r.birdId);
+    const od=r.status==="pending"&&new Date(r.dueAt)<new Date();
+    return(
+      <div style={{...S.card,borderColor:od?"#dc262644":r.status==="done"?"#4ade8022":"#1e293b",marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:17,fontWeight:700,color:od?"#f87171":r.status==="done"?"#4ade80":"#f1f5f9"}}>{bird?.tagId||"?"} — {r.kind}</div>
+            <div style={{color:"#64748b",fontSize:14,marginTop:2}}>{od?"⚠️ Overdue · ":""}{formatDate(r.dueAt)}</div>
+          </div>
+          {canComplete&&r.status==="pending"&&<button style={{...S.btnSm,color:"#4ade80",borderColor:"#4ade8033"}} onClick={()=>onComplete(r,true)}>✓ Done</button>}
+          {r.status==="done"&&<span style={S.badge("#4ade80")}>✓</span>}
+        </div>
+      </div>
+    );
+  };
+
+  return(
+    <div style={S.content}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"20px 0 14px"}}>
+        <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9"}}>🔔 Reminders</div>
+        <button style={{...S.btnPrimary,width:"auto",marginTop:0,padding:"12px 20px"}} onClick={()=>setShowForm(true)}>+ New</button>
+      </div>
+      {overdue.length>0&&<div style={{marginBottom:18}}><div style={{fontSize:17,fontWeight:800,color:"#f87171",marginBottom:8}}>⚠️ Overdue ({overdue.length})</div>{overdue.map(r=><RC key={r.id} r={r} canComplete/>)}</div>}
+      {upcoming.length>0&&<div style={{marginBottom:18}}><div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:8}}>📅 Upcoming ({upcoming.length})</div>{upcoming.map(r=><RC key={r.id} r={r} canComplete/>)}</div>}
+      {done.length>0&&<div style={{marginBottom:18}}><div style={{fontSize:17,fontWeight:800,color:"#64748b",marginBottom:8}}>✅ Completed</div>{done.map(r=><RC key={r.id} r={r} canComplete={false}/>)}</div>}
+      {reminders.length===0&&<Empty icon="🔔" text="No reminders set"/>}
+      {rules.length>0&&(
+        <div style={{marginTop:8}}>
+          <div style={{fontSize:16,fontWeight:800,color:"#475569",marginBottom:8}}>Active Rules</div>
+          {rules.map(rule=>{const bird=birds.find(b=>b.id===rule.birdId);return(
+            <div key={rule.id} style={{...S.card,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div><div style={{fontSize:16,fontWeight:700,color:"#f1f5f9"}}>{bird?.tagId||"?"} — {rule.kind}</div><div style={{color:"#64748b",fontSize:14}}>Every {rule.cadenceDays}d</div></div>
+                <button style={S.btnDanger} onClick={()=>onDeleteRule(rule.id)}>✕</button>
+              </div>
+            </div>
+          );})}
+        </div>
+      )}
+      {showForm&&(
+        <Modal title="New Reminder Rule" onClose={()=>setShowForm(false)}>
+          <F label="Bird *"><select style={S.select} value={rf.birdId} onChange={e=>setRf({...rf,birdId:e.target.value})}>
+            <option value="">Select bird...</option>
+            {birds.filter(b=>b.status==="active").map(b=><option key={b.id} value={b.id}>{b.tagId} {b.breed?`— ${b.breed}`:""}</option>)}
+          </select></F>
+          <F label="Task"><select style={S.select} value={rf.kind} onChange={e=>setRf({...rf,kind:e.target.value})}>{REMINDER_KINDS.map(k=><option key={k} value={k}>{k}</option>)}</select></F>
+          <F label="Every (days)"><input style={S.input} type="number" value={rf.cadenceDays} onChange={e=>setRf({...rf,cadenceDays:e.target.value})} min="1"/></F>
+          <button style={S.btnPrimary} onClick={saveRule}>Save Rule</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+function ExportTab({birds,batches,measurements,healthEvents,reminders}){
+  const cats=[
+    {l:"Birds",icon:"🐓",fn:"birds.csv",d:()=>birds},
+    {l:"Egg Batches",icon:"🥚",fn:"egg_batches.csv",d:()=>batches},
+    {l:"Measurements",icon:"📏",fn:"measurements.csv",d:()=>measurements.map(m=>({...m,tagId:birds.find(b=>b.id===m.birdId)?.tagId||""}))},
+    {l:"Health Events",icon:"🩺",fn:"health_events.csv",d:()=>healthEvents.map(h=>({...h,tagId:birds.find(b=>b.id===h.birdId)?.tagId||""}))},
+    {l:"Reminders",icon:"🔔",fn:"reminders.csv",d:()=>reminders},
+  ];
+  return(
+    <div style={S.content}>
+      <div style={{padding:"20px 0 14px"}}>
+        <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9"}}>📤 Export Data</div>
+        <div style={{color:"#64748b",fontSize:15,marginTop:2}}>Download as CSV files</div>
+      </div>
+      <div style={S.card}>
+        <div style={{fontSize:17,fontWeight:800,color:"#f1f5f9",marginBottom:10}}>Summary</div>
+        {[["Birds",birds.length],["Active Birds",birds.filter(b=>b.status==="active").length],["Batches",batches.length],["Measurements",measurements.length],["Health Events",healthEvents.length]].map(([l,v])=>(
+          <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #1e293b",fontSize:16}}>
+            <span style={{color:"#94a3b8"}}>{l}</span><span style={{color:"#f59e0b",fontWeight:800}}>{v}</span>
+          </div>
+        ))}
+      </div>
+      {cats.map(c=>{const count=c.d().length;return(
+        <div key={c.l} style={{...S.card,display:"flex",alignItems:"center",gap:14,marginBottom:12}}>
+          <span style={{fontSize:28}}>{c.icon}</span>
+          <div style={{flex:1}}><div style={{fontSize:17,fontWeight:700,color:"#f1f5f9"}}>{c.l}</div><div style={{color:"#64748b",fontSize:14}}>{count} records</div></div>
+          <button style={{...S.btnSm,color:count>0?"#f59e0b":"#475569",borderColor:count>0?"#f59e0b44":"#334155"}} disabled={count===0} onClick={()=>exportCSV(c.d(),c.fn)}>↓ CSV</button>
+        </div>
+      );})}
+      <div style={{...S.card,borderColor:"#f59e0b33",background:"#f59e0b08"}}>
+        <div style={{fontSize:17,fontWeight:800,color:"#f59e0b",marginBottom:6}}>Export All</div>
+        <button style={S.btnPrimary} onClick={()=>cats.forEach(c=>{if(c.d().length>0)exportCSV(c.d(),c.fn);})}>↓ Export All CSV Files</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Root App ──────────────────────────────────────────────────────────────────
+const TABS=[{id:"dashboard",label:"Home",icon:"🏠"},{id:"batches",label:"Batches",icon:"🥚"},{id:"birds",label:"Birds",icon:"🐓"},{id:"reminders",label:"Remind",icon:"🔔"},{id:"export",label:"Export",icon:"📤"}];
+
+function App(){
+  const [tab,setTab]=useState("dashboard");
+  const [batches,setBatches]=useState([]);
+  const [birds,setBirds]=useState([]);
+  const [measurements,setMeasurements]=useState([]);
+  const [healthEvents,setHealthEvents]=useState([]);
+  const [rules,setRules]=useState([]);
+  const [instances,setInstances]=useState([]);
+  const [eggStates,setEggStates]=useState([]);
+  const [loaded,setLoaded]=useState(false);
+
+  useEffect(()=>{
+    Promise.all(STORES.map(s=>dbGetAll(s))).then(([b,br,m,h,rr,ri,es])=>{
+      setBatches(b);setBirds(br);setMeasurements(m);setHealthEvents(h);setRules(rr);setInstances(ri);setEggStates(es||[]);
+    }).catch(e=>console.error(e)).finally(()=>setLoaded(true));
+  },[]);
+
+  const p=useCallback((store,item)=>dbPut(store,item),[]);
+  const d=useCallback((store,id)=>dbDelete(store,id),[]);
+
+  const addBatch=b=>{setBatches(prev=>[...prev,b]);p("eggBatches",b);};
+  const delBatch=id=>{setBatches(prev=>prev.filter(b=>b.id!==id));d("eggBatches",id);};
+  const updBatch=b=>{setBatches(prev=>prev.map(x=>x.id===b.id?b:x));p("eggBatches",b);};
+  const addBird=b=>{setBirds(prev=>[...prev,b]);p("birds",b);};
+  const updBird=b=>{setBirds(prev=>prev.map(x=>x.id===b.id?b:x));p("birds",b);};
+  const delBird=id=>{setBirds(prev=>prev.filter(b=>b.id!==id));d("birds",id);};
+  const addM=m=>{setMeasurements(prev=>[...prev,m]);p("measurements",m);};
+  const addH=h=>{setHealthEvents(prev=>[...prev,h]);p("healthEvents",h);};
+  const addRule=r=>{setRules(prev=>[...prev,r]);p("reminderRules",r);};
+  const delRule=id=>{setRules(prev=>prev.filter(r=>r.id!==id));d("reminderRules",id);};
+  const saveEggState=es=>{setEggStates(prev=>{const exists=prev.find(x=>x.id===es.id);return exists?prev.map(x=>x.id===es.id?es:x):[...prev,es];});p("eggStates",es);};
+  const handleInst=(inst,markDone)=>{
+    if(markDone){
+      const up={...inst,status:"done",completedAt:new Date().toISOString()};
+      setInstances(prev=>prev.map(r=>r.id===inst.id?up:r));p("reminderInstances",up);
+      const rule=rules.find(r=>r.id===inst.ruleId);
+      if(rule){const next={id:uid(),birdId:inst.birdId,kind:inst.kind,dueAt:new Date(Date.now()+rule.cadenceDays*86400000).toISOString(),status:"pending",ruleId:rule.id};setInstances(prev=>[...prev,next]);p("reminderInstances",next);}
+    }else{setInstances(prev=>[...prev,inst]);p("reminderInstances",inst);}
+  };
+
+  if(!loaded)return(
+    <div style={{...S.page,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,minHeight:"100dvh"}}>
+      <div style={{fontSize:64}}>🐔</div>
+      <div style={{fontSize:22,fontWeight:800,color:"#f59e0b"}}>Loading FlockTrack...</div>
+    </div>
+  );
+
+  return(
+    <div style={S.page}>
+      <div style={S.topBar}>
+        <span style={{fontSize:26}}>🐔</span>
+        <span style={S.topTitle}>FlockTrack</span>
+        <span style={{fontSize:14,color:"#475569"}}>{birds.filter(b=>b.status==="active").length} active · {batches.length} batches</span>
+      </div>
+      {tab==="dashboard"&&<Dashboard birds={birds} batches={batches} measurements={measurements} reminders={instances}/>}
+      {tab==="batches"&&<EggBatches batches={batches} birds={birds} eggStates={eggStates} onAdd={addBatch} onUpdate={updBatch} onHatch={addBird} onDelete={delBatch} onSaveEggState={saveEggState}/>}
+      {tab==="birds"&&<Birds birds={birds} batches={batches} measurements={measurements} healthEvents={healthEvents} onAdd={addBird} onUpdate={updBird} onDelete={delBird} onAddM={addM} onAddH={addH}/>}
+      {tab==="reminders"&&<Reminders birds={birds} reminders={instances} rules={rules} onAddRule={addRule} onComplete={handleInst} onDeleteRule={delRule}/>}
+      {tab==="export"&&<ExportTab birds={birds} batches={batches} measurements={measurements} healthEvents={healthEvents} reminders={instances}/>}
+      <nav style={S.bottomNav}>
+        {TABS.map(t=>(
+          <button key={t.id} style={S.navBtn(tab===t.id)} onClick={()=>setTab(t.id)}>
+            <span style={{fontSize:22}}>{t.icon}</span>{t.label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
