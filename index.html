@@ -13880,8 +13880,8 @@ function App() {
         border: isSelected ? "2px solid #1d4ed8" : "1px solid #dbe4ef",
         background: isSelected ? "#eff6ff" : cell.inMonth ? "#ffffff" : "#f8fafc",
         borderRadius: 10,
-        minHeight: 64,
-        padding: "6px 5px",
+        minHeight: 48,
+        padding: "4px 4px",
         textAlign: "left",
         cursor: "pointer",
         opacity: cell.inMonth ? 1 : .72
@@ -13909,7 +13909,7 @@ function App() {
         display: "flex",
         alignItems: "center",
         gap: 4,
-        marginTop: 8,
+        marginTop: 4,
         flexWrap: "wrap"
       }
     }, dayEvents.slice(0, 3).map((dotEvent, idx) => React.createElement("span", {
