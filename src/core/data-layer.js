@@ -1,4 +1,6 @@
 (function(root) {
+  const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs"];
+  const DEFERRED_STORES = ["healthEvents", "reminderRules"];
   const toPhotoExportRows = rows => rows.map(photo => ({
     id: photo.id,
     birdId: photo.birdId,
@@ -6,20 +8,29 @@
     sizeKb: photo.sizeKb,
     hasImage: photo.hasImage != null ? !!photo.hasImage : !!photo.dataUrl
   }));
+  const readStores = async stores => Object.fromEntries(await Promise.all(stores.map(async store => [store, await dbAll(store)])));
+  const normalizeOverviewData = stores => ({
+    eggBatches: stores.eggBatches || [],
+    birds: stores.birds || [],
+    measurements: stores.measurements || [],
+    reminderInstances: stores.reminderInstances || [],
+    eggStates: stores.eggStates || [],
+    pens: stores.pens || [],
+    feedTypes: stores.feedTypes || [],
+    penFeedLogs: stores.penFeedLogs || []
+  });
+  const normalizeDeferredData = stores => ({
+    healthEvents: stores.healthEvents || [],
+    reminderRules: stores.reminderRules || []
+  });
   root.FlockTrackData = {
+    loadOverviewData: async () => normalizeOverviewData(await readStores(OVERVIEW_STORES)),
+    loadDeferredData: async () => normalizeDeferredData(await readStores(DEFERRED_STORES)),
     loadCoreData: async () => {
-      const [eggBatches, birds, measurements, healthEvents, reminderRules, reminderInstances, eggStates, pens, feedTypes, penFeedLogs] = await Promise.all(CORE_STORES.map(store => dbAll(store)));
+      const [overviewStores, deferredStores] = await Promise.all([readStores(OVERVIEW_STORES), readStores(DEFERRED_STORES)]);
       return {
-        eggBatches,
-        birds,
-        measurements,
-        healthEvents,
-        reminderRules,
-        reminderInstances,
-        eggStates: eggStates || [],
-        pens: pens || [],
-        feedTypes: feedTypes || [],
-        penFeedLogs: penFeedLogs || []
+        ...normalizeOverviewData(overviewStores),
+        ...normalizeDeferredData(deferredStores)
       };
     },
     loadPhotoExportRows: async () => toPhotoExportRows(await dbAll("birdPhotos")),

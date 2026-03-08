@@ -4,14 +4,31 @@ const {
   completeReminderAndScheduleNext,
   buildAutomaticHatchReminders
 } = globalThis.FlockTrackLogic;
-const {
-  loadCoreData: readCoreData,
-  loadPhotoExportRows,
-  loadBirdPhotos,
-  exportAllStores,
-  replaceStores,
-  clearAllStores
-} = globalThis.FlockTrackData;
+const dataApi = globalThis.FlockTrackData || {};
+const emptyOverviewData = () => ({
+  eggBatches: [],
+  birds: [],
+  measurements: [],
+  reminderInstances: [],
+  eggStates: [],
+  pens: [],
+  feedTypes: [],
+  penFeedLogs: []
+});
+const emptyDeferredData = () => ({
+  healthEvents: [],
+  reminderRules: []
+});
+const readOverviewData = dataApi.loadOverviewData || dataApi.loadCoreData || (async () => emptyOverviewData());
+const readDeferredData = dataApi.loadDeferredData || (async () => emptyDeferredData());
+const loadPhotoExportRows = dataApi.loadPhotoExportRows || (async () => []);
+const loadBirdPhotos = dataApi.loadBirdPhotos || (async () => []);
+const exportAllStores = dataApi.exportAllStores || (async () => ({
+  stores: {},
+  total: 0
+}));
+const replaceStores = dataApi.replaceStores || (async () => {});
+const clearAllStores = dataApi.clearAllStores || (async () => {});
 const APP_PENS_NEST_CHICKS_ICON = typeof globalThis !== "undefined" && globalThis.FLOCK_TRACK_PENS_NEST_CHICKS_ICON ? globalThis.FLOCK_TRACK_PENS_NEST_CHICKS_ICON : "assets/icons/pens-nest-chicks-icon.png";
 const TABS = [{
   id: "overview",
@@ -46,6 +63,35 @@ const TABS = [{
 }];
 const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats"];
 const HIDEABLE_TAB_IDS = new Set(HIDEABLE_TAB_ORDER);
+const LAZY_SCREEN_DEFS = {
+  hatchery: {
+    component: "Batches",
+    src: "build/chunk-hatchery.js",
+    title: "Hatchery"
+  },
+  pens: {
+    component: "Pens",
+    src: "build/chunk-pens.js",
+    title: "Pens"
+  },
+  flock: {
+    component: "Birds",
+    src: "build/chunk-flock.js",
+    title: "Flock"
+  },
+  settings: {
+    component: "SettingsTab",
+    src: "build/chunk-settings.js",
+    title: "Settings"
+  },
+  stats: {
+    component: "StatsTab",
+    src: "build/chunk-stats.js",
+    title: "Stats"
+  }
+};
+const DEFERRED_DATA_TABS = new Set(["flock", "search", "stats"]);
+const DEFERRED_SETTINGS_SECTIONS = new Set(["tasks", "reports"]);
 const TAB_VISIBILITY_STORAGE_KEY = "flocktrack-tab-visibility-v1";
 const GIST_SYNC_STORAGE_KEY = "flocktrack-gist-sync-v1";
 const GIST_DEVICE_ID_STORAGE_KEY = "flocktrack-gist-device-id-v1";
@@ -87,6 +133,65 @@ const loadSavedTabVisibility = () => {
     return defaults;
   }
 };
+const lazyScreenInitialStatus = () => Object.fromEntries(Object.entries(LAZY_SCREEN_DEFS).map(([key, cfg]) => [key, typeof globalThis !== "undefined" && typeof globalThis[cfg.component] === "function" ? "ready" : "idle"]));
+const lazyScreenComponent = key => {
+  const cfg = LAZY_SCREEN_DEFS[key];
+  if (!cfg || typeof globalThis === "undefined") return null;
+  return globalThis[cfg.component] || null;
+};
+const tabNeedsDeferredData = (tabId, settingsSection, overlayKind) => DEFERRED_DATA_TABS.has(tabId) || tabId === "settings" && DEFERRED_SETTINGS_SECTIONS.has(settingsSection) || overlayKind === "bird";
+const scheduleIdleTask = callback => {
+  if (typeof window === "undefined") return null;
+  if (typeof window.requestIdleCallback === "function") return {
+    type: "idle",
+    handle: window.requestIdleCallback(callback, {
+      timeout: 1200
+    })
+  };
+  return {
+    type: "timeout",
+    handle: window.setTimeout(callback, 220)
+  };
+};
+const cancelIdleTask = task => {
+  if (!task || typeof window === "undefined") return;
+  if (task.type === "idle" && typeof window.cancelIdleCallback === "function") {
+    window.cancelIdleCallback(task.handle);
+    return;
+  }
+  window.clearTimeout(task.handle);
+};
+function appStatusView(title, message, errorMessage = "") {
+  const isError = !!errorMessage;
+  return React.createElement("div", {
+    style: C.body
+  }, React.createElement("div", {
+    style: {
+      ...C.card,
+      borderColor: isError ? "#fecaca" : "#d9e3ef",
+      background: isError ? "#fff5f5" : "#ffffff"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: isError ? "#b91c1c" : "#0f172a"
+    }
+  }, title), React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 14,
+      color: "#475569",
+      lineHeight: 1.45
+    }
+  }, message || (isError ? errorMessage : "Loading...")), isError && React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 13,
+      color: "#64748b"
+    }
+  }, "Reload the app if this keeps happening.")));
+}
 const parseDateMs = value => {
   if (!value) return 0;
   const ms = new Date(value).getTime();
@@ -876,6 +981,11 @@ function App() {
   const [photoExportRows, setPhotoExportRows] = useState([]);
   const [photoExportLoaded, setPhotoExportLoaded] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [deferredLoaded, setDeferredLoaded] = useState(false);
+  const [deferredLoading, setDeferredLoading] = useState(false);
+  const [deferredDataError, setDeferredDataError] = useState("");
+  const [lazyScreenStatus, setLazyScreenStatus] = useState(() => lazyScreenInitialStatus());
+  const [lazyScreenErrors, setLazyScreenErrors] = useState({});
   const [storageInfo, setStorageInfo] = useState({
     loading: false,
     supported: true,
@@ -905,6 +1015,10 @@ function App() {
   const photoCacheRef = useRef(photoCache);
   const gistSyncRef = useRef(gistSyncConfig);
   const deleteUndoTimer = useRef(null);
+  const lazyScreenPromisesRef = useRef({});
+  const deferredLoadPromiseRef = useRef(null);
+  const idleDeferredTaskRef = useRef(null);
+  const dataLoadVersionRef = useRef(0);
   const birdsLive = useMemo(() => birds.filter(b => !b.archivedAt), [birds]);
   const birdById = useMemo(() => new Map(birds.map(bird => [bird.id, bird])), [birds]);
   const hideableTabs = useMemo(() => HIDEABLE_TAB_ORDER.map(id => TABS.find(tabDef => tabDef.id === id)).filter(Boolean), []);
@@ -972,6 +1086,7 @@ function App() {
       return sum + Math.max(0, eggCount - counts.hatched - counts.failed);
     }, 0);
   }, [batches, eggStates]);
+  const activeNeedsDeferredData = tabNeedsDeferredData(tab, settingsSection, recordOverlay?.kind);
   const scrollViewportTop = useCallback(() => {
     try {
       window.scrollTo(0, 0);
@@ -980,30 +1095,142 @@ function App() {
       if (document?.body) document.body.scrollTop = 0;
     }
   }, []);
-  const loadCoreData = useCallback(async () => {
+  const applyOverviewData = useCallback(core => {
+    const normalizedMeasurements = appNormalizeMeasurements(core?.measurements);
+    setBatches(core?.eggBatches || []);
+    setBirds(core?.birds || []);
+    setMeasurements(normalizedMeasurements.rows);
+    setInstances(core?.reminderInstances || []);
+    setEggStates(core?.eggStates || []);
+    setPens(core?.pens || []);
+    setFeedTypes(core?.feedTypes || []);
+    setPenFeedLogs(core?.penFeedLogs || []);
+    if (normalizedMeasurements.changed) {
+      dbReplace("measurements", normalizedMeasurements.rows).catch(console.error);
+    }
+  }, []);
+  const applyDeferredData = useCallback(data => {
+    setHealthEvents(data?.healthEvents || []);
+    setRules(data?.reminderRules || []);
+  }, []);
+  const ensureLazyScreenLoaded = useCallback(screenKey => {
+    const cfg = LAZY_SCREEN_DEFS[screenKey];
+    if (!cfg) return Promise.resolve(null);
+    if (typeof lazyScreenComponent(screenKey) === "function") {
+      setLazyScreenStatus(prev => prev[screenKey] === "ready" ? prev : {
+        ...prev,
+        [screenKey]: "ready"
+      });
+      setLazyScreenErrors(prev => {
+        if (!prev[screenKey]) return prev;
+        const next = {
+          ...prev
+        };
+        delete next[screenKey];
+        return next;
+      });
+      return Promise.resolve(lazyScreenComponent(screenKey));
+    }
+    if (lazyScreenPromisesRef.current[screenKey]) return lazyScreenPromisesRef.current[screenKey];
+    if (typeof document === "undefined") return Promise.reject(new Error(`Cannot load ${cfg.title} in this environment.`));
+    setLazyScreenStatus(prev => ({
+      ...prev,
+      [screenKey]: "loading"
+    }));
+    setLazyScreenErrors(prev => {
+      if (!prev[screenKey]) return prev;
+      const next = {
+        ...prev
+      };
+      delete next[screenKey];
+      return next;
+    });
+    lazyScreenPromisesRef.current[screenKey] = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = cfg.src;
+      script.async = true;
+      script.dataset.flocktrackChunk = screenKey;
+      script.onload = () => {
+        lazyScreenPromisesRef.current[screenKey] = null;
+        if (typeof lazyScreenComponent(screenKey) === "function") {
+          setLazyScreenStatus(prev => ({
+            ...prev,
+            [screenKey]: "ready"
+          }));
+          resolve(lazyScreenComponent(screenKey));
+          return;
+        }
+        const err = new Error(`${cfg.title} finished loading but the screen is still unavailable.`);
+        setLazyScreenStatus(prev => ({
+          ...prev,
+          [screenKey]: "error"
+        }));
+        setLazyScreenErrors(prev => ({
+          ...prev,
+          [screenKey]: err.message
+        }));
+        reject(err);
+      };
+      script.onerror = () => {
+        lazyScreenPromisesRef.current[screenKey] = null;
+        const err = new Error(`Could not load the ${cfg.title.toLowerCase()} screen.`);
+        setLazyScreenStatus(prev => ({
+          ...prev,
+          [screenKey]: "error"
+        }));
+        setLazyScreenErrors(prev => ({
+          ...prev,
+          [screenKey]: err.message
+        }));
+        reject(err);
+      };
+      document.head.appendChild(script);
+    });
+    return lazyScreenPromisesRef.current[screenKey];
+  }, []);
+  const loadStartupData = useCallback(async () => {
+    const version = dataLoadVersionRef.current + 1;
+    dataLoadVersionRef.current = version;
+    deferredLoadPromiseRef.current = null;
     setLoaded(false);
+    setDeferredLoaded(false);
+    setDeferredLoading(false);
+    setDeferredDataError("");
     try {
-      const core = await readCoreData();
-      const normalizedMeasurements = appNormalizeMeasurements(core.measurements);
-      setBatches(core.eggBatches);
-      setBirds(core.birds);
-      setMeasurements(normalizedMeasurements.rows);
-      setHealthEvents(core.healthEvents);
-      setRules(core.reminderRules);
-      setInstances(core.reminderInstances);
-      setEggStates(core.eggStates);
-      setPens(core.pens);
-      setFeedTypes(core.feedTypes);
-      setPenFeedLogs(core.penFeedLogs);
-      if (normalizedMeasurements.changed) {
-        dbReplace("measurements", normalizedMeasurements.rows).catch(console.error);
-      }
+      setHealthEvents([]);
+      setRules([]);
+      const overviewData = await readOverviewData();
+      if (dataLoadVersionRef.current !== version) return;
+      applyOverviewData(overviewData);
     } catch (e) {
       console.error(e);
     } finally {
-      setLoaded(true);
+      if (dataLoadVersionRef.current === version) setLoaded(true);
     }
-  }, []);
+  }, [applyOverviewData]);
+  const loadDeferredData = useCallback(async () => {
+    if (deferredLoaded) return emptyDeferredData();
+    if (deferredLoadPromiseRef.current) return deferredLoadPromiseRef.current;
+    const version = dataLoadVersionRef.current;
+    setDeferredLoading(true);
+    setDeferredDataError("");
+    deferredLoadPromiseRef.current = Promise.resolve(readDeferredData()).then(data => {
+      if (dataLoadVersionRef.current !== version) return data;
+      applyDeferredData(data);
+      setDeferredLoaded(true);
+      return data;
+    }).catch(err => {
+      if (dataLoadVersionRef.current === version) {
+        console.error(err);
+        setDeferredDataError(err?.message || "Could not load the rest of the app data.");
+      }
+      throw err;
+    }).finally(() => {
+      if (dataLoadVersionRef.current === version) setDeferredLoading(false);
+      deferredLoadPromiseRef.current = null;
+    });
+    return deferredLoadPromiseRef.current;
+  }, [applyDeferredData, deferredLoaded]);
   useEffect(() => {
     photoCacheRef.current = photoCache;
   }, [photoCache]);
@@ -1012,13 +1239,38 @@ function App() {
   }, [gistSyncConfig]);
   useEffect(() => () => {
     if (deleteUndoTimer.current) clearTimeout(deleteUndoTimer.current);
+    cancelIdleTask(idleDeferredTaskRef.current);
   }, []);
   useEffect(() => {
     scrollViewportTop();
   }, [scrollViewportTop, tab]);
   useEffect(() => {
-    loadCoreData().catch(console.error);
-  }, [loadCoreData]);
+    loadStartupData().catch(console.error);
+  }, [loadStartupData]);
+  useEffect(() => {
+    if (!loaded || deferredLoaded || deferredLoading) return;
+    const task = scheduleIdleTask(() => {
+      loadDeferredData().catch(() => {});
+    });
+    idleDeferredTaskRef.current = task;
+    return () => cancelIdleTask(task);
+  }, [deferredLoaded, deferredLoading, loadDeferredData, loaded]);
+  useEffect(() => {
+    if (!loaded || deferredLoaded || !activeNeedsDeferredData) return;
+    loadDeferredData().catch(() => {});
+  }, [activeNeedsDeferredData, deferredLoaded, loadDeferredData, loaded]);
+  useEffect(() => {
+    const neededScreens = [];
+    if (tab === "hatchery") neededScreens.push("hatchery");
+    if (tab === "pens") neededScreens.push("pens");
+    if (tab === "flock") neededScreens.push("flock");
+    if (tab === "settings") neededScreens.push("settings");
+    if (tab === "stats") neededScreens.push("stats");
+    if (recordOverlay?.kind === "bird") neededScreens.push("flock");
+    neededScreens.forEach(screenKey => {
+      ensureLazyScreenLoaded(screenKey).catch(() => {});
+    });
+  }, [ensureLazyScreenLoaded, recordOverlay?.kind, tab]);
   useEffect(() => {
     if (tab !== "settings" || settingsSection !== "reports" || photoExportLoaded) return;
     loadPhotoExportRows().then(rows => {
@@ -1124,9 +1376,10 @@ function App() {
     setPhotoExportLoaded(false);
     setDeleteUndo(null);
     setTab("overview");
-    await loadCoreData();
+    await loadStartupData();
+    await loadDeferredData().catch(() => {});
     await Promise.all([refreshRetentionInfo(), refreshStorageInfo()]);
-  }, [loadCoreData, refreshRetentionInfo, refreshStorageInfo]);
+  }, [loadDeferredData, loadStartupData, refreshRetentionInfo, refreshStorageInfo]);
   const persistGistConfig = useCallback(patch => {
     const next = saveGistSyncConfig({
       ...gistSyncRef.current,
@@ -1882,6 +2135,22 @@ function App() {
     }
     closeCalendarModal();
   }
+  function renderDeferredDataView(title, pendingMessage) {
+    return appStatusView(title, deferredDataError || pendingMessage, deferredDataError);
+  }
+  function renderLazyScreenView(screenKey, props, options = {}) {
+    const cfg = LAZY_SCREEN_DEFS[screenKey];
+    const ScreenComponent = lazyScreenComponent(screenKey);
+    if (typeof ScreenComponent !== "function") {
+      const chunkError = lazyScreenErrors[screenKey] || "";
+      const pendingMessage = lazyScreenStatus[screenKey] === "loading" ? `Loading ${cfg.title.toLowerCase()}...` : `Preparing ${cfg.title.toLowerCase()}...`;
+      return appStatusView(cfg.title, chunkError || pendingMessage, chunkError);
+    }
+    if (options.requireDeferredData && !deferredLoaded) {
+      return renderDeferredDataView(cfg.title, deferredLoading ? "Loading the rest of the flock records..." : `Preparing ${cfg.title.toLowerCase()} data...`);
+    }
+    return React.createElement(ScreenComponent, props);
+  }
   const headerDateLabel = fmtDate(new Date());
   return React.createElement("div", {
     style: C.page
@@ -1945,7 +2214,7 @@ function App() {
     onPushToGist: pushToGist,
     photoCache: photoCache,
     ensureBirdPhotos: ensureBirdPhotos
-  }), tab === "hatchery" && React.createElement(Batches, {
+  }), tab === "hatchery" && renderLazyScreenView("hatchery", {
     batches: batches,
     eggStates: eggStates,
     onAdd: addBatch,
@@ -1955,7 +2224,7 @@ function App() {
     onSaveEgg: saveEgg,
     openBatchId: pendingBatchOpenId,
     onOpenBatchHandled: () => setPendingBatchOpenId("")
-  }), tab === "pens" && React.createElement(Pens, {
+  }), tab === "pens" && renderLazyScreenView("pens", {
     pens: pens,
     birds: birds,
     measurements: measurements,
@@ -1974,7 +2243,7 @@ function App() {
     onOpenPenHandled: () => setPendingPenOpenId(""),
     photoCache: photoCache,
     ensureBirdPhotos: ensureBirdPhotos
-  }), tab === "flock" && React.createElement(ScreenErrorBoundary, {
+  }), tab === "flock" && (typeof lazyScreenComponent("flock") === "function" && deferredLoaded ? React.createElement(ScreenErrorBoundary, {
     resetKey: `${tab}:${birdsLive.length}`,
     renderFallback: error => React.createElement("div", {
       style: C.body
@@ -2004,7 +2273,7 @@ function App() {
         color: "#64748b"
       }
     }, "If this appears on your phone, tell me the exact message shown here.")))
-  }, React.createElement(Birds, {
+  }, renderLazyScreenView("flock", {
     birds: birdsLive,
     batches: batches,
     pens: pens,
@@ -2023,7 +2292,30 @@ function App() {
     onAddH: addH,
     onAddPhoto: addPhoto,
     onDelPhoto: delPhoto
-  })), tab === "search" && React.createElement(SearchTab, {
+  }, {
+    requireDeferredData: true
+  })) : renderLazyScreenView("flock", {
+    birds: birdsLive,
+    batches: batches,
+    pens: pens,
+    feedTypes: feedTypes,
+    penFeedLogs: penFeedLogs,
+    measurements: measurements,
+    healthEvents: healthEvents,
+    eggStates: eggStates,
+    reminders: allReminders,
+    photoCache: photoCache,
+    ensureBirdPhotos: ensureBirdPhotos,
+    onAdd: addBird,
+    onUpdate: updBird,
+    onDelete: delBird,
+    onAddM: addM,
+    onAddH: addH,
+    onAddPhoto: addPhoto,
+    onDelPhoto: delPhoto
+  }, {
+    requireDeferredData: true
+  })), tab === "search" && (!deferredLoaded ? renderDeferredDataView("Search", deferredLoading ? "Loading the rest of the flock records..." : "Preparing search across all records...") : React.createElement(SearchTab, {
     birds: birds,
     batches: batches,
     pens: pens,
@@ -2034,7 +2326,7 @@ function App() {
     reminders: allReminders,
     onOpenBird: openBirdRecord,
     onOpenTab: openTabFromSearch
-  }), tab === "stats" && React.createElement(ScreenErrorBoundary, {
+  })), tab === "stats" && (typeof lazyScreenComponent("stats") === "function" && deferredLoaded ? React.createElement(ScreenErrorBoundary, {
     resetKey: `${tab}:${birds.length}:${penFeedLogs.length}:${measurements.length}`,
     renderFallback: error => React.createElement("div", {
       style: C.body
@@ -2058,7 +2350,7 @@ function App() {
         lineHeight: 1.45
       }
     }, error?.message || "The stats screen could not be rendered.")))
-  }, React.createElement(StatsTab, {
+  }, renderLazyScreenView("stats", {
     birds: birds,
     batches: batches,
     pens: pens,
@@ -2068,7 +2360,21 @@ function App() {
     healthEvents: healthEvents,
     reminders: allReminders,
     eggStates: eggStates
-  })), tab === "settings" && React.createElement(SettingsTab, {
+  }, {
+    requireDeferredData: true
+  })) : renderLazyScreenView("stats", {
+    birds: birds,
+    batches: batches,
+    pens: pens,
+    feedTypes: feedTypes,
+    penFeedLogs: penFeedLogs,
+    measurements: measurements,
+    healthEvents: healthEvents,
+    reminders: allReminders,
+    eggStates: eggStates
+  }, {
+    requireDeferredData: true
+  })), tab === "settings" && renderLazyScreenView("settings", {
     section: settingsSection,
     generalTab: settingsGeneralTab,
     onSectionChange: setSettingsSection,
@@ -2105,6 +2411,8 @@ function App() {
     hideableTabs: hideableTabs,
     tabVisibility: tabVisibility,
     onUpdateTabVisibility: updateTabVisibility
+  }, {
+    requireDeferredData: settingsSection !== "general"
   }), recordOverlay?.kind === "bird" && React.createElement("div", {
     style: {
       position: "fixed",
@@ -2121,7 +2429,7 @@ function App() {
       WebkitOverflowScrolling: "touch",
       background: "#f8fafc"
     }
-  }, React.createElement(Birds, {
+  }, renderLazyScreenView("flock", {
     birds: birdsLive,
     batches: batches,
     pens: pens,
@@ -2143,6 +2451,8 @@ function App() {
     openBirdId: recordOverlay.birdId,
     openBirdPenId: recordOverlay.penId || "",
     onRequestClose: closeRecordOverlay
+  }, {
+    requireDeferredData: true
   }))), showCalendarModal && React.createElement("div", {
     style: {
       position: "fixed",
