@@ -22,7 +22,8 @@ const PASTE_IMPORT_STORE_LABELS = {
   birdPhotos: "Bird Photos",
   pens: "Pens",
   feedTypes: "Feed Types",
-  penFeedLogs: "Pen Feed Logs"
+  penFeedLogs: "Pen Feed Logs",
+  financeEntries: "Finance Entries"
 };
 const PASTE_IMPORT_LLM_PROMPT = `Convert the raw poultry data below into valid FlockTrack backup JSON.
 
@@ -50,7 +51,8 @@ Allowed stores template:
     "birdPhotos": [],
     "pens": [],
     "feedTypes": [],
-    "penFeedLogs": []
+    "penFeedLogs": [],
+    "financeEntries": []
   }
 }
 
@@ -67,6 +69,7 @@ function SettingsTab({
   pens,
   feedTypes,
   penFeedLogs,
+  financeEntries,
   measurements,
   healthEvents,
   reminders,
@@ -1048,6 +1051,7 @@ function SettingsTab({
     pens: pens || [],
     feedTypes: feedTypes || [],
     penFeedLogs: penFeedLogs || [],
+    financeEntries: financeEntries || [],
     measurements: measurements || [],
     healthEvents: healthEvents || [],
     reminders: reminders || [],

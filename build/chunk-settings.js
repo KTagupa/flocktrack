@@ -259,6 +259,7 @@ function ExportTab({
   pens,
   feedTypes,
   penFeedLogs,
+  financeEntries,
   measurements,
   healthEvents,
   reminders,
@@ -266,6 +267,9 @@ function ExportTab({
   photos,
   embedded = false
 }) {
+  const buildFinanceLedgerRows = globalThis.FlockTrackLogic?.buildFinanceLedger;
+  const financeLabel = globalThis.FlockTrackLogic?.financeCategoryLabel;
+  financeEntries = Array.isArray(financeEntries) ? financeEntries : [];
   const birdTagById = useMemo(() => {
     const m = new Map();
     birds.forEach(b => m.set(b.id, b.tagId || ""));
@@ -276,6 +280,11 @@ function ExportTab({
     batches.forEach(batch => m.set(batch.id, batch));
     return m;
   }, [batches]);
+  const feedTypeById = useMemo(() => {
+    const m = new Map();
+    feedTypes.forEach(feedType => m.set(feedType.id, feedType));
+    return m;
+  }, [feedTypes]);
   const latestWeightByBird = useMemo(() => {
     const m = new Map();
     measurements.forEach(entry => {
@@ -298,6 +307,29 @@ function ExportTab({
       share: total > 0 ? `${Math.round(count / total * 100)}%` : "—"
     }));
   }, []);
+  const financeLedgerRows = useMemo(() => typeof buildFinanceLedgerRows === "function" ? buildFinanceLedgerRows({
+    birds,
+    financeEntries
+  }).map(row => ({
+    id: row.id,
+    source: row.source,
+    sourceId: row.sourceId,
+    date: row.date,
+    type: row.type,
+    category: row.category,
+    categoryLabel: financeLabel ? financeLabel(row.category) : humanize(row.category || ""),
+    feedTypeId: row.feedTypeId || "",
+    feedTypeName: row.feedTypeId ? feedTypeById.get(row.feedTypeId)?.name || "" : "",
+    quantity: row.quantity != null ? row.quantity : "",
+    unit: row.unit || "",
+    sackKg: row.sackKg != null ? row.sackKg : "",
+    unitPrice: row.unitPrice != null ? row.unitPrice : "",
+    pricePerKg: row.pricePerKg != null ? row.pricePerKg : "",
+    amount: row.amount,
+    description: row.description || "",
+    notes: row.notes || "",
+    locked: !!row.locked
+  })) : [], [birds, buildFinanceLedgerRows, feedTypeById, financeEntries, financeLabel]);
   const rawExports = useMemo(() => [{
     l: "Birds",
     ic: "🐓",
@@ -323,6 +355,11 @@ function ExportTab({
     ic: "🪣",
     fn: "pen-feed-logs.csv",
     data: penFeedLogs
+  }, {
+    l: "Finance Entries",
+    ic: "💸",
+    fn: "finance-entries.csv",
+    data: financeEntries
   }, {
     l: "Measurements",
     ic: "📏",
@@ -365,7 +402,7 @@ function ExportTab({
       sizeKb: p.sizeKb,
       hasImage: p.hasImage != null ? !!p.hasImage : !!p.dataUrl
     }))
-  }], [batchById, batches, birdTagById, birds, eggStates, feedTypes, healthEvents, measurements, penFeedLogs, pens, photos, reminders]);
+  }], [batchById, batches, birdTagById, birds, eggStates, feedTypes, financeEntries, healthEvents, measurements, penFeedLogs, pens, photos, reminders]);
   const hatcherySummaryRows = useMemo(() => batches.map(batch => {
     const states = eggStates.filter(state => state.batchId === batch.id);
     const hatched = states.filter(state => state.status === "hatched").length;
@@ -447,7 +484,12 @@ function ExportTab({
     ic: "⚰️",
     fn: "mortality-report.csv",
     data: mortalityReportRows
-  }], [flockSummaryRows, hatcherySummaryRows, mortalityReportRows, salesReportRows]);
+  }, {
+    l: "Finance Ledger",
+    ic: "💸",
+    fn: "finance-ledger.csv",
+    data: financeLedgerRows
+  }], [financeLedgerRows, flockSummaryRows, hatcherySummaryRows, mortalityReportRows, salesReportRows]);
   function tableHtml(rows, columns) {
     if (!rows.length) return `<p>No records yet.</p>`;
     return `<table><thead><tr>${columns.map(col => `<th>${escapeHtml(col.label)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${columns.map(col => `<td>${escapeHtml(col.render ? col.render(row) : row[col.key] ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
@@ -705,7 +747,8 @@ const PASTE_IMPORT_STORE_LABELS = {
   birdPhotos: "Bird Photos",
   pens: "Pens",
   feedTypes: "Feed Types",
-  penFeedLogs: "Pen Feed Logs"
+  penFeedLogs: "Pen Feed Logs",
+  financeEntries: "Finance Entries"
 };
 const PASTE_IMPORT_LLM_PROMPT = `Convert the raw poultry data below into valid FlockTrack backup JSON.
 
@@ -733,7 +776,8 @@ Allowed stores template:
     "birdPhotos": [],
     "pens": [],
     "feedTypes": [],
-    "penFeedLogs": []
+    "penFeedLogs": [],
+    "financeEntries": []
   }
 }
 
@@ -750,6 +794,7 @@ function SettingsTab({
   pens,
   feedTypes,
   penFeedLogs,
+  financeEntries,
   measurements,
   healthEvents,
   reminders,
@@ -1731,6 +1776,7 @@ function SettingsTab({
     pens: pens || [],
     feedTypes: feedTypes || [],
     penFeedLogs: penFeedLogs || [],
+    financeEntries: financeEntries || [],
     measurements: measurements || [],
     healthEvents: healthEvents || [],
     reminders: reminders || [],

@@ -1,6 +1,6 @@
 const DB_NAME = "FlockTrackDB";
-const DB_VER = 5;
-const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs"];
+const DB_VER = 6;
+const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
 const CORE_STORES = STORES.filter(s => s !== "birdPhotos");
 const STATUS_COLORS = {
   active: "#15803d",

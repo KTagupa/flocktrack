@@ -38,6 +38,16 @@ const fmtNum = n => {
     maximumFractionDigits: 2
   }) : "—";
 };
+const MONEY_FMT_PHP = new Intl.NumberFormat("en-PH", {
+  style: "currency",
+  currency: "PHP",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
+const fmtMoney = n => {
+  const v = Number(n);
+  return Number.isFinite(v) ? MONEY_FMT_PHP.format(v) : "—";
+};
 const fmtPct = (num, den) => den > 0 ? `${Math.round(num / den * 100)}%` : "—";
 const dateMs = d => {
   const t = new Date(d || 0).getTime();

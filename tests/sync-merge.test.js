@@ -21,6 +21,7 @@ const {
   mergeBirdConflictRow,
   mergeMeasurementConflictRow,
   mergeHealthConflictRow,
+  mergeFinanceConflictRow,
   mergeStoreRows
 } = __syncMergeTest;
 
@@ -184,6 +185,67 @@ function run() {
   assert.equal(mergedHealthRows.rows[0].outcome, "improved appetite");
   assert.equal(mergedHealthRows.keptLocal, 1);
   assert.equal(mergedHealthRows.keptRemote, 1);
+
+  const localFinance = {
+    id: "finance-1",
+    date: "2026-03-06",
+    type: "expense",
+    category: "feed",
+    amount: 450,
+    description: "Local feed order",
+    notes: "",
+    feedTypeId: "feed-1",
+    quantity: 5,
+    unit: "sack",
+    sackKg: 50,
+    createdAt: "2026-03-06T06:00:00.000Z",
+    updatedAt: "2026-03-06T06:00:00.000Z"
+  };
+  const remoteFinance = {
+    id: "finance-1",
+    date: "2026-03-01",
+    type: "expense",
+    category: "feed",
+    amount: 400,
+    description: "Remote feed order",
+    notes: "Supplier receipt stored",
+    feedTypeId: "feed-1",
+    quantity: 4,
+    unit: "sack",
+    sackKg: 40,
+    createdAt: "2026-03-01T08:00:00.000Z",
+    updatedAt: "2026-03-01T08:00:00.000Z"
+  };
+  const mergedFinance = mergeFinanceConflictRow(localFinance, remoteFinance, "remote");
+  assert.equal(mergedFinance.amount, 450);
+  assert.equal(mergedFinance.description, "Local feed order");
+  assert.equal(mergedFinance.notes, "Supplier receipt stored");
+  assert.equal(mergedFinance.date, "2026-03-06");
+  assert.equal(mergedFinance.quantity, 5);
+  assert.equal(mergedFinance.sackKg, 50);
+
+  const mergedFinanceRows = mergeStoreRows("financeEntries", [localFinance, {
+    id: "finance-2",
+    date: "2026-03-04",
+    type: "income",
+    category: "egg_sale",
+    amount: 200,
+    description: "Local egg sale",
+    updatedAt: "2026-03-04T05:00:00.000Z"
+  }], [remoteFinance, {
+    id: "finance-3",
+    date: "2026-03-07",
+    type: "expense",
+    category: "transport",
+    amount: 90,
+    description: "Remote transport",
+    updatedAt: "2026-03-07T02:00:00.000Z"
+  }], "remote");
+  assert.equal(mergedFinanceRows.conflicts, 1);
+  assert.equal(mergedFinanceRows.rows.length, 3);
+  assert.equal(mergedFinanceRows.rows[0].notes, "Supplier receipt stored");
+  assert.equal(mergedFinanceRows.addedFromLocal, 1);
+  assert.equal(mergedFinanceRows.addedFromRemote, 1);
 }
 
 run();

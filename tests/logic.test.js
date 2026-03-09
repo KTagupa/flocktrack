@@ -13,6 +13,12 @@ const {
   stageSuggestion,
   retentionDaysForStatus,
   buildRetentionSnapshot,
+  buildBirdSaleFinanceRows,
+  buildFinanceLedger,
+  buildFeedExpenseMetrics,
+  filterFinanceRowsByMonth,
+  summarizeFinanceRows,
+  rollupFinanceCategories,
   normalizeBackupPayload,
   completeReminderAndScheduleNext
 } = require("../src/core/logic.shared.js");
@@ -110,14 +116,124 @@ function run() {
       }],
       measurements: [{
         id: "measurement-1"
+      }],
+      financeEntries: [{
+        id: "finance-1"
       }]
     }
-  }, ["birds", "measurements", "eggBatches"]);
-  assert.equal(normalizedBackup.total, 2);
+  }, ["birds", "measurements", "eggBatches", "financeEntries"]);
+  assert.equal(normalizedBackup.total, 3);
   assert.deepEqual(normalizedBackup.normalized.eggBatches, []);
+  assert.deepEqual(normalizedBackup.normalized.financeEntries, [{
+    id: "finance-1"
+  }]);
   assert.throws(() => normalizeBackupPayload({
     foo: []
   }, ["birds"]), /recognized store data/i);
+
+  const birdSaleRows = buildBirdSaleFinanceRows({
+    birds: [{
+      id: "bird-1",
+      tagId: "OB001-010",
+      status: "sold",
+      salePrice: "1200",
+      soldDate: "2026-03-05",
+      buyerName: "Buyer A",
+      createdAt: "2026-02-01T00:00:00.000Z"
+    }, {
+      id: "bird-2",
+      nickname: "Ruby",
+      tagId: "TAG-2",
+      status: "sold",
+      salePrice: 950,
+      updatedAt: "2026-02-28T05:00:00.000Z",
+      createdAt: "2026-02-10T00:00:00.000Z"
+    }, {
+      id: "bird-3",
+      tagId: "TAG-3",
+      status: "sold",
+      salePrice: "bad-data",
+      soldDate: "2026-03-03"
+    }]
+  });
+  assert.equal(birdSaleRows.length, 2);
+  assert.equal(birdSaleRows[0].date, "2026-03-05");
+  assert.equal(birdSaleRows[0].category, "bird_sale");
+  assert.equal(birdSaleRows[0].notes, "Buyer: Buyer A");
+  assert.equal(birdSaleRows[1].date, "2026-02-28");
+  assert.equal(birdSaleRows[1].description, "Ruby (TAG-2) sold");
+
+  const financeLedger = buildFinanceLedger({
+    birds: [{
+      id: "bird-1",
+      tagId: "OB001-010",
+      status: "sold",
+      salePrice: 1200,
+      soldDate: "2026-03-05"
+    }, {
+      id: "bird-2",
+      tagId: "TAG-2",
+      status: "sold",
+      salePrice: 950,
+      soldDate: "2026-02-28"
+    }],
+    financeEntries: [{
+      id: "finance-1",
+      date: "2026-03-06",
+      type: "expense",
+      category: "feed",
+      amount: 400,
+      description: "Starter feed",
+      notes: "March purchase",
+      feedTypeId: "feed-1",
+      quantity: 5,
+      unit: "sack",
+      sackKg: 50,
+      createdAt: "2026-03-06T01:00:00.000Z",
+      updatedAt: "2026-03-06T01:00:00.000Z"
+    }, {
+      id: "finance-2",
+      date: "2026-03-02",
+      type: "income",
+      category: "egg_sale",
+      amount: 300,
+      description: "Egg trays",
+      notes: "",
+      createdAt: "2026-03-02T01:00:00.000Z",
+      updatedAt: "2026-03-02T01:00:00.000Z"
+    }]
+  });
+  assert.equal(financeLedger.length, 4);
+  assert.equal(financeLedger[0].id, "finance-1");
+  assert.equal(financeLedger[0].feedTypeId, "feed-1");
+  assert.equal(financeLedger[0].unitPrice, 80);
+  assert.equal(financeLedger[0].pricePerKg, 1.6);
+  assert.equal(financeLedger[1].category, "bird_sale");
+
+  const feedMetrics = buildFeedExpenseMetrics({
+    type: "expense",
+    category: "feed",
+    amount: 630,
+    feedTypeId: "feed-2",
+    quantity: 6,
+    unit: "sack",
+    sackKg: 40
+  });
+  assert.equal(feedMetrics.feedTypeId, "feed-2");
+  assert.equal(feedMetrics.unitPrice, 105);
+  assert.equal(feedMetrics.quantityKg, 240);
+  assert.equal(feedMetrics.pricePerKg, 2.625);
+
+  const marchFinanceRows = filterFinanceRowsByMonth(financeLedger, "2026-03");
+  const marchSummary = summarizeFinanceRows(marchFinanceRows);
+  const marchRollups = rollupFinanceCategories(marchFinanceRows);
+  assert.equal(marchFinanceRows.length, 3);
+  assert.equal(marchSummary.income, 1500);
+  assert.equal(marchSummary.expenses, 400);
+  assert.equal(marchSummary.net, 1100);
+  assert.equal(marchSummary.transactions, 3);
+  assert.deepEqual(marchRollups.income.map(row => [row.category, row.amount]), [["bird_sale", 1200], ["egg_sale", 300]]);
+  assert.deepEqual(marchRollups.expense.map(row => [row.category, row.amount]), [["feed", 400]]);
 
   const reminderResult = completeReminderAndScheduleNext({
     id: "inst-1",

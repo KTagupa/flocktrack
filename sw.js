@@ -1,5 +1,5 @@
 // Generated from sw.source.js. Edit source, then run npm run build.
-const CACHE_NAME = "flocktrack-app-shell-4edcec628c20";
+const CACHE_NAME = "flocktrack-app-shell-bca3e2b94e73";
 const APP_SHELL_URLS = [
   "index.html",
   "manifest.webmanifest",
@@ -11,6 +11,7 @@ const APP_SHELL_URLS = [
   "build/chunk-pens.js",
   "build/chunk-flock.js",
   "build/chunk-settings.js",
+  "build/chunk-finance.js",
   "build/chunk-stats.js",
   "assets/icons/pens-nest-chicks-icon.png",
   "assets/pwa/icon-512.png",

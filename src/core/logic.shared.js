@@ -15,6 +15,97 @@
     deceased: 30,
     culled: 30
   };
+  const FINANCE_CATEGORY_DEFS = [{
+    id: "bird_sale",
+    type: "income",
+    label: "Bird Sale",
+    manual: false
+  }, {
+    id: "egg_sale",
+    type: "income",
+    label: "Egg Sale",
+    manual: true
+  }, {
+    id: "chick_sale",
+    type: "income",
+    label: "Chick Sale",
+    manual: true
+  }, {
+    id: "manure_sale",
+    type: "income",
+    label: "Manure Sale",
+    manual: true
+  }, {
+    id: "other_income",
+    type: "income",
+    label: "Other Income",
+    manual: true
+  }, {
+    id: "feed",
+    type: "expense",
+    label: "Feed",
+    manual: true
+  }, {
+    id: "medicine",
+    type: "expense",
+    label: "Medicine",
+    manual: true
+  }, {
+    id: "utilities",
+    type: "expense",
+    label: "Utilities",
+    manual: true
+  }, {
+    id: "labor",
+    type: "expense",
+    label: "Labor",
+    manual: true
+  }, {
+    id: "equipment",
+    type: "expense",
+    label: "Equipment",
+    manual: true
+  }, {
+    id: "transport",
+    type: "expense",
+    label: "Transport",
+    manual: true
+  }, {
+    id: "maintenance",
+    type: "expense",
+    label: "Maintenance",
+    manual: true
+  }, {
+    id: "other_expense",
+    type: "expense",
+    label: "Other Expense",
+    manual: true
+  }];
+  const FINANCE_CATEGORY_LABELS = Object.fromEntries(FINANCE_CATEGORY_DEFS.map(def => [def.id, def.label]));
+  const FINANCE_CATEGORY_BY_ID = new Map(FINANCE_CATEGORY_DEFS.map(def => [def.id, def]));
+  const FINANCE_MANUAL_CATEGORY_OPTIONS = {
+    income: FINANCE_CATEGORY_DEFS.filter(def => def.type === "income" && def.manual).map(def => ({
+      id: def.id,
+      label: def.label
+    })),
+    expense: FINANCE_CATEGORY_DEFS.filter(def => def.type === "expense" && def.manual).map(def => ({
+      id: def.id,
+      label: def.label
+    }))
+  };
+  const FINANCE_FEED_UNIT_OPTIONS = [{
+    id: "kg",
+    label: "kg"
+  }, {
+    id: "g",
+    label: "g"
+  }, {
+    id: "lb",
+    label: "lb"
+  }, {
+    id: "sack",
+    label: "sack"
+  }];
   const HATCH_INCUBATION_DAYS = 21;
   const HATCH_ALERT_WINDOW_DAYS = 2;
   const STATUS_DATE_FIELDS = {
@@ -62,6 +153,214 @@
   const dayToNoonIso = dayValue => {
     const day = normalizeDay(dayValue);
     return day ? new Date(`${day}T12:00:00.000Z`).toISOString() : "";
+  };
+  const financeAmountValue = value => {
+    const amount = Number(value);
+    return Number.isFinite(amount) && amount >= 0 ? amount : null;
+  };
+  const financeQuantityValue = value => {
+    const quantity = Number(value);
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+  };
+  const financeNormalizeUnit = value => {
+    const unit = String(value || "").trim().toLowerCase();
+    return FINANCE_FEED_UNIT_OPTIONS.some(option => option.id === unit) ? unit : "";
+  };
+  const financeQuantityToKg = (quantityValue, unitValue, sackKgValue) => {
+    const quantity = financeQuantityValue(quantityValue);
+    const unit = financeNormalizeUnit(unitValue);
+    if (quantity == null || !unit) return null;
+    if (unit === "kg") return quantity;
+    if (unit === "g") return quantity / 1000;
+    if (unit === "lb") return quantity * 0.45359237;
+    if (unit === "sack") {
+      const sackKg = financeAmountValue(sackKgValue);
+      return sackKg != null && sackKg > 0 ? quantity * sackKg : null;
+    }
+    return null;
+  };
+  const buildFeedExpenseMetrics = entry => {
+    const isFeedExpense = String(entry?.category || "").trim() === "feed" && entry?.type !== "income";
+    if (!isFeedExpense) {
+      return {
+        feedTypeId: "",
+        quantity: null,
+        unit: "",
+        sackKg: null,
+        quantityKg: null,
+        unitPrice: null,
+        pricePerKg: null
+      };
+    }
+    const quantity = financeQuantityValue(entry?.quantity);
+    const unit = financeNormalizeUnit(entry?.unit);
+    const sackKg = unit === "sack" ? financeAmountValue(entry?.sackKg) : null;
+    const quantityKg = financeQuantityToKg(quantity, unit, sackKg);
+    const amount = financeAmountValue(entry?.amount);
+    return {
+      feedTypeId: String(entry?.feedTypeId || "").trim(),
+      quantity,
+      unit,
+      sackKg,
+      quantityKg,
+      unitPrice: quantity != null && amount != null ? amount / quantity : null,
+      pricePerKg: quantityKg != null && quantityKg > 0 && amount != null ? amount / quantityKg : null
+    };
+  };
+  const financeCategoryLabel = categoryId => FINANCE_CATEGORY_LABELS[categoryId] || String(categoryId == null ? "" : categoryId).replace(/_/g, " ").replace(/\b\w/g, char => char.toUpperCase()) || "Uncategorized";
+  const normalizeFinanceMonth = value => {
+    const text = String(value == null ? "" : value).trim();
+    if (/^\d{4}-\d{2}$/.test(text)) return text;
+    const day = normalizeDay(text);
+    return day ? day.slice(0, 7) : "";
+  };
+  const shiftFinanceMonth = (monthValue, deltaMonths) => {
+    const month = normalizeFinanceMonth(monthValue);
+    if (!month) return "";
+    const [yearText, monthText] = month.split("-");
+    const year = Number(yearText);
+    const monthIndex = Number(monthText) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return "";
+    const shifted = new Date(Date.UTC(year, monthIndex + (Number(deltaMonths) || 0), 1));
+    return shifted.toISOString().slice(0, 7);
+  };
+  const financeMonthTitle = monthValue => {
+    const month = normalizeFinanceMonth(monthValue);
+    if (!month) return "";
+    const [yearText, monthText] = month.split("-");
+    const year = Number(yearText);
+    const monthIndex = Number(monthText) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return month;
+    return new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString(undefined, {
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC"
+    });
+  };
+  const financeDateScore = value => {
+    const ms = new Date(value || 0).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  const financeSortScore = row => Math.max(financeDateScore(row?.date), financeDateScore(row?.updatedAt), financeDateScore(row?.createdAt));
+  const financeBirdLabel = bird => {
+    const nickname = String(bird?.nickname || "").trim();
+    const tagId = String(bird?.tagId || "").trim();
+    if (nickname && tagId) return `${nickname} (${tagId})`;
+    return nickname || tagId || "Bird";
+  };
+  const buildBirdSaleFinanceRows = ({
+    birds = []
+  } = {}) => (Array.isArray(birds) ? birds : []).filter(bird => bird?.status === "sold").map(bird => {
+    const amount = financeAmountValue(bird?.salePrice);
+    if (amount == null) return null;
+    const date = normalizeDay(bird?.soldDate) || normalizeDay(bird?.updatedAt) || normalizeDay(bird?.createdAt);
+    if (!date) return null;
+    const buyerName = String(bird?.buyerName || "").trim();
+    return {
+      id: `bird-sale-${bird.id}`,
+      source: "bird_sale",
+      sourceId: bird.id,
+      date,
+      type: "income",
+      category: "bird_sale",
+      amount,
+      description: `${financeBirdLabel(bird)} sold`,
+      notes: buyerName ? `Buyer: ${buyerName}` : "",
+      locked: true,
+      createdAt: bird?.createdAt || "",
+      updatedAt: bird?.updatedAt || ""
+    };
+  }).filter(Boolean).sort((a, b) => financeSortScore(b) - financeSortScore(a) || String(b.id || "").localeCompare(String(a.id || "")));
+  const buildFinanceLedger = ({
+    birds = [],
+    financeEntries = []
+  } = {}) => {
+    const manualRows = (Array.isArray(financeEntries) ? financeEntries : []).filter(entry => entry && typeof entry === "object").map(entry => {
+      const amount = financeAmountValue(entry.amount);
+      const date = normalizeDay(entry.date);
+      if (amount == null || !date) return null;
+      const type = entry.type === "income" ? "income" : "expense";
+      const feedMetrics = buildFeedExpenseMetrics({
+        ...entry,
+        type
+      });
+      return {
+        id: entry.id,
+        source: "manual",
+        sourceId: entry.id,
+        date,
+        type,
+        category: String(entry.category || "").trim(),
+        amount,
+        description: String(entry.description || "").trim(),
+        notes: String(entry.notes || "").trim(),
+        locked: false,
+        createdAt: entry.createdAt || "",
+        updatedAt: entry.updatedAt || "",
+        ...feedMetrics
+      };
+    }).filter(Boolean);
+    return [...manualRows, ...buildBirdSaleFinanceRows({
+      birds
+    }).map(row => ({
+      ...row,
+      feedTypeId: "",
+      quantity: null,
+      unit: "",
+      sackKg: null,
+      quantityKg: null,
+      unitPrice: null,
+      pricePerKg: null
+    }))].sort((a, b) => financeSortScore(b) - financeSortScore(a) || String(b.id || "").localeCompare(String(a.id || "")));
+  };
+  const filterFinanceRowsByMonth = (rows, monthValue) => {
+    const month = normalizeFinanceMonth(monthValue);
+    const source = Array.isArray(rows) ? rows : [];
+    if (!month) return source;
+    return source.filter(row => String(row?.date || "").slice(0, 7) === month);
+  };
+  const summarizeFinanceRows = rows => {
+    const source = Array.isArray(rows) ? rows : [];
+    return source.reduce((summary, row) => {
+      const amount = financeAmountValue(row?.amount);
+      if (amount == null) return summary;
+      if (row?.type === "income") summary.income += amount;else summary.expenses += amount;
+      summary.transactions += 1;
+      summary.net = summary.income - summary.expenses;
+      return summary;
+    }, {
+      income: 0,
+      expenses: 0,
+      net: 0,
+      transactions: 0
+    });
+  };
+  const rollupFinanceCategories = rows => {
+    const source = Array.isArray(rows) ? rows : [];
+    const grouped = {
+      income: new Map(),
+      expense: new Map()
+    };
+    source.forEach(row => {
+      const amount = financeAmountValue(row?.amount);
+      const type = row?.type === "income" ? "income" : "expense";
+      const category = String(row?.category || "").trim() || "uncategorized";
+      if (amount == null) return;
+      const current = grouped[type].get(category) || {
+        category,
+        label: financeCategoryLabel(category),
+        type,
+        amount: 0,
+        count: 0
+      };
+      current.amount += amount;
+      current.count += 1;
+      grouped[type].set(category, current);
+    });
+    return {
+      income: [...grouped.income.values()].sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label)),
+      expense: [...grouped.expense.values()].sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label))
+    };
   };
   const getBirdInactiveDate = bird => {
     if (!bird) return "";
@@ -342,10 +641,20 @@
     HATCH_INCUBATION_DAYS,
     HATCH_ALERT_WINDOW_DAYS,
     RETENTION_DAYS,
+    FINANCE_CATEGORY_DEFS,
+    FINANCE_CATEGORY_LABELS,
+    FINANCE_MANUAL_CATEGORY_OPTIONS,
+    FINANCE_FEED_UNIT_OPTIONS,
     STATUS_DATE_FIELDS,
     normalizeTagId,
     normalizeDay,
     addDaysToDay,
+    normalizeFinanceMonth,
+    shiftFinanceMonth,
+    financeMonthTitle,
+    financeCategoryLabel,
+    financeQuantityToKg,
+    buildFeedExpenseMetrics,
     nextCode,
     eggCode,
     outsiderTagCode,
@@ -358,6 +667,11 @@
     stageSuggestion,
     retentionDaysForStatus,
     buildRetentionSnapshot,
+    buildBirdSaleFinanceRows,
+    buildFinanceLedger,
+    filterFinanceRowsByMonth,
+    summarizeFinanceRows,
+    rollupFinanceCategories,
     normalizeBackupPayload,
     completeReminderAndScheduleNext
   };

@@ -2,7 +2,8 @@ const {
   buildRetentionSnapshot,
   normalizeBackupPayload,
   completeReminderAndScheduleNext,
-  buildAutomaticHatchReminders
+  buildAutomaticHatchReminders,
+  financeCategoryLabel
 } = globalThis.FlockTrackLogic;
 const dataApi = globalThis.FlockTrackData || {};
 const emptyOverviewData = () => ({
@@ -13,7 +14,8 @@ const emptyOverviewData = () => ({
   eggStates: [],
   pens: [],
   feedTypes: [],
-  penFeedLogs: []
+  penFeedLogs: [],
+  financeEntries: []
 });
 const emptyDeferredData = () => ({
   healthEvents: [],
@@ -57,11 +59,15 @@ const TABS = [{
   lbl: "Stats",
   ic: "📊"
 }, {
+  id: "finance",
+  lbl: "Finance",
+  ic: "💸"
+}, {
   id: "settings",
   lbl: "Settings",
   ic: "⚙️"
 }];
-const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats"];
+const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats", "finance"];
 const HIDEABLE_TAB_IDS = new Set(HIDEABLE_TAB_ORDER);
 const LAZY_SCREEN_DEFS = {
   hatchery: {
@@ -88,6 +94,11 @@ const LAZY_SCREEN_DEFS = {
     component: "StatsTab",
     src: "build/chunk-stats.js",
     title: "Stats"
+  },
+  finance: {
+    component: "FinanceTab",
+    src: "build/chunk-finance.js",
+    title: "Finance"
   }
 };
 const DEFERRED_DATA_TABS = new Set(["flock", "search", "stats"]);
@@ -454,10 +465,33 @@ const mergeHealthConflictRow = (localRow, remoteRow, preferSide) => {
   });
   return out;
 };
+const mergeFinanceConflictRow = (localRow, remoteRow, preferSide) => {
+  const local = localRow && typeof localRow === "object" ? localRow : {};
+  const remote = remoteRow && typeof remoteRow === "object" ? remoteRow : {};
+  const localRowScore = rowConflictTime(local);
+  const remoteRowScore = rowConflictTime(remote);
+  const localFinanceScore = Math.max(parseDateMs(local.updatedAt), parseDateMs(local.modifiedAt), parseDateMs(local.createdAt), parseDateMs(local.date));
+  const remoteFinanceScore = Math.max(parseDateMs(remote.updatedAt), parseDateMs(remote.modifiedAt), parseDateMs(remote.createdAt), parseDateMs(remote.date));
+  const out = {};
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+  keys.forEach(key => {
+    if (key === "id") {
+      out.id = local.id != null ? local.id : remote.id;
+      return;
+    }
+    if (key === "date" || key === "type" || key === "category" || key === "amount" || key === "description" || key === "notes" || key === "feedTypeId" || key === "quantity" || key === "unit" || key === "sackKg") {
+      out[key] = pickSyncField(local[key], remote[key], localFinanceScore, remoteFinanceScore, preferSide);
+      return;
+    }
+    out[key] = pickSyncField(local[key], remote[key], localRowScore, remoteRowScore, preferSide);
+  });
+  return out;
+};
 const resolveStoreConflictRow = (storeName, localRow, remoteRow, preferSide) => {
   if (storeName === "birds") return mergeBirdConflictRow(localRow, remoteRow, preferSide);
   if (storeName === "measurements") return mergeMeasurementConflictRow(localRow, remoteRow, preferSide);
   if (storeName === "healthEvents") return mergeHealthConflictRow(localRow, remoteRow, preferSide);
+  if (storeName === "financeEntries") return mergeFinanceConflictRow(localRow, remoteRow, preferSide);
   const localScore = rowConflictTime(localRow);
   const remoteScore = rowConflictTime(remoteRow);
   if (localScore > remoteScore) return localRow;
@@ -699,6 +733,7 @@ function SearchTab({
   pens,
   feedTypes,
   penFeedLogs,
+  financeEntries,
   measurements,
   healthEvents,
   reminders,
@@ -805,6 +840,20 @@ function SearchTab({
       };
     }).slice(0, 24);
     addGroup("health", "Health Events", healthItems);
+    const financeItems = (financeEntries || []).filter(entry => {
+      const feedName = entry.feedTypeId ? feedTypeById.get(entry.feedTypeId)?.name || "" : "";
+      return matchAny([entry.type, financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || ""), entry.category, entry.amount, entry.date, entry.description, entry.notes, feedName, entry.quantity, entry.unit], q);
+    }).sort((a, b) => dateMs(b.updatedAt || b.date) - dateMs(a.updatedAt || a.date)).map(entry => {
+      const feedName = entry.feedTypeId ? feedTypeById.get(entry.feedTypeId)?.name || "" : "";
+      return {
+      id: entry.id,
+      title: entry.description || (financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || "finance")),
+      subtitle: [humanize(entry.type || "expense"), financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || ""), fmtMoney(entry.amount), fmtDate(entry.date)].filter(Boolean).join(" · "),
+      detail: [feedName, entry.quantity != null && entry.unit ? `${fmtNum(entry.quantity)} ${entry.unit}` : "", entry.notes || ""].filter(Boolean).join(" · "),
+      onOpen: () => onOpenTab?.("finance")
+      };
+    }).slice(0, 24);
+    addGroup("finance", "Finance Entries", financeItems);
     const reminderItems = (reminders || []).filter(reminder => {
       const bird = birdById.get(reminder.birdId);
       return matchAny([reminder.title, reminder.note, reminder.dueAt, reminder.completedAt, reminder.status, bird?.tagId, bird?.nickname], q);
@@ -820,7 +869,7 @@ function SearchTab({
     }).slice(0, 24);
     addGroup("reminders", "Reminders", reminderItems);
     return out;
-  }, [batchById, batches, birdById, birds, feedTypeById, feedTypes, healthEvents, measurements, onOpenBird, onOpenTab, penById, penFeedLogs, pens, q, reminders]);
+  }, [batchById, batches, birdById, birds, feedTypeById, feedTypes, financeEntries, healthEvents, measurements, onOpenBird, onOpenTab, penById, penFeedLogs, pens, q, reminders]);
   const totalMatches = groups.reduce((sum, group) => sum + group.items.length, 0);
   return React.createElement("div", {
     style: C.body
@@ -846,7 +895,7 @@ function SearchTab({
     style: C.inp,
     value: query,
     onChange: e => setQuery(e.target.value),
-    placeholder: "Search birds, pens, batches, logs, reminders..."
+    placeholder: "Search birds, pens, batches, logs, finance, reminders..."
   }), React.createElement("div", {
     style: {
       marginTop: 8,
@@ -977,6 +1026,7 @@ function App() {
   const [pens, setPens] = useState([]);
   const [feedTypes, setFeedTypes] = useState([]);
   const [penFeedLogs, setPenFeedLogs] = useState([]);
+  const [financeEntries, setFinanceEntries] = useState([]);
   const [photoCache, setPhotoCache] = useState({});
   const [photoExportRows, setPhotoExportRows] = useState([]);
   const [photoExportLoaded, setPhotoExportLoaded] = useState(false);
@@ -1105,6 +1155,7 @@ function App() {
     setPens(core?.pens || []);
     setFeedTypes(core?.feedTypes || []);
     setPenFeedLogs(core?.penFeedLogs || []);
+    setFinanceEntries(core?.financeEntries || []);
     if (normalizedMeasurements.changed) {
       dbReplace("measurements", normalizedMeasurements.rows).catch(console.error);
     }
@@ -1266,6 +1317,7 @@ function App() {
     if (tab === "flock") neededScreens.push("flock");
     if (tab === "settings") neededScreens.push("settings");
     if (tab === "stats") neededScreens.push("stats");
+    if (tab === "finance") neededScreens.push("finance");
     if (recordOverlay?.kind === "bird") neededScreens.push("flock");
     neededScreens.forEach(screenKey => {
       ensureLazyScreenLoaded(screenKey).catch(() => {});
@@ -1481,6 +1533,19 @@ function App() {
   function delPenFeedLog(id) {
     setPenFeedLogs(prev => prev.filter(log => log.id !== id));
     dbDel("penFeedLogs", id);
+  }
+  function addFinanceEntry(entry) {
+    setFinanceEntries(prev => [...prev, entry]);
+    dbPut("financeEntries", entry);
+  }
+  function updFinanceEntry(entry) {
+    if (!entry?.id) return;
+    setFinanceEntries(prev => prev.map(item => item.id === entry.id ? entry : item));
+    dbPut("financeEntries", entry);
+  }
+  function delFinanceEntry(id) {
+    setFinanceEntries(prev => prev.filter(entry => entry.id !== id));
+    dbDel("financeEntries", id);
   }
   function addBird(b) {
     setBirds(p => [...p, b]);
@@ -2321,6 +2386,7 @@ function App() {
     pens: pens,
     feedTypes: feedTypes,
     penFeedLogs: penFeedLogs,
+    financeEntries: financeEntries,
     measurements: measurements,
     healthEvents: healthEvents,
     reminders: allReminders,
@@ -2374,7 +2440,14 @@ function App() {
     eggStates: eggStates
   }, {
     requireDeferredData: true
-  })), tab === "settings" && renderLazyScreenView("settings", {
+  })), tab === "finance" && renderLazyScreenView("finance", {
+    birds: birds,
+    feedTypes: feedTypes,
+    financeEntries: financeEntries,
+    onAddFinanceEntry: addFinanceEntry,
+    onUpdateFinanceEntry: updFinanceEntry,
+    onDeleteFinanceEntry: delFinanceEntry
+  }), tab === "settings" && renderLazyScreenView("settings", {
     section: settingsSection,
     generalTab: settingsGeneralTab,
     onSectionChange: setSettingsSection,
@@ -2384,6 +2457,7 @@ function App() {
     pens: pens,
     feedTypes: feedTypes,
     penFeedLogs: penFeedLogs,
+    financeEntries: financeEntries,
     measurements: measurements,
     healthEvents: healthEvents,
     reminders: allReminders,
@@ -2792,6 +2866,7 @@ if (typeof module !== "undefined" && module.exports) {
       mergeBirdConflictRow,
       mergeMeasurementConflictRow,
       mergeHealthConflictRow,
+      mergeFinanceConflictRow,
       resolveStoreConflictRow,
       mergeStoreRows
     }

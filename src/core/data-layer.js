@@ -1,5 +1,5 @@
 (function(root) {
-  const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs"];
+  const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
   const DEFERRED_STORES = ["healthEvents", "reminderRules"];
   const toPhotoExportRows = rows => rows.map(photo => ({
     id: photo.id,
@@ -17,7 +17,8 @@
     eggStates: stores.eggStates || [],
     pens: stores.pens || [],
     feedTypes: stores.feedTypes || [],
-    penFeedLogs: stores.penFeedLogs || []
+    penFeedLogs: stores.penFeedLogs || [],
+    financeEntries: stores.financeEntries || []
   });
   const normalizeDeferredData = stores => ({
     healthEvents: stores.healthEvents || [],

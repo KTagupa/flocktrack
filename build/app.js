@@ -27,6 +27,97 @@ const {
     deceased: 30,
     culled: 30
   };
+  const FINANCE_CATEGORY_DEFS = [{
+    id: "bird_sale",
+    type: "income",
+    label: "Bird Sale",
+    manual: false
+  }, {
+    id: "egg_sale",
+    type: "income",
+    label: "Egg Sale",
+    manual: true
+  }, {
+    id: "chick_sale",
+    type: "income",
+    label: "Chick Sale",
+    manual: true
+  }, {
+    id: "manure_sale",
+    type: "income",
+    label: "Manure Sale",
+    manual: true
+  }, {
+    id: "other_income",
+    type: "income",
+    label: "Other Income",
+    manual: true
+  }, {
+    id: "feed",
+    type: "expense",
+    label: "Feed",
+    manual: true
+  }, {
+    id: "medicine",
+    type: "expense",
+    label: "Medicine",
+    manual: true
+  }, {
+    id: "utilities",
+    type: "expense",
+    label: "Utilities",
+    manual: true
+  }, {
+    id: "labor",
+    type: "expense",
+    label: "Labor",
+    manual: true
+  }, {
+    id: "equipment",
+    type: "expense",
+    label: "Equipment",
+    manual: true
+  }, {
+    id: "transport",
+    type: "expense",
+    label: "Transport",
+    manual: true
+  }, {
+    id: "maintenance",
+    type: "expense",
+    label: "Maintenance",
+    manual: true
+  }, {
+    id: "other_expense",
+    type: "expense",
+    label: "Other Expense",
+    manual: true
+  }];
+  const FINANCE_CATEGORY_LABELS = Object.fromEntries(FINANCE_CATEGORY_DEFS.map(def => [def.id, def.label]));
+  const FINANCE_CATEGORY_BY_ID = new Map(FINANCE_CATEGORY_DEFS.map(def => [def.id, def]));
+  const FINANCE_MANUAL_CATEGORY_OPTIONS = {
+    income: FINANCE_CATEGORY_DEFS.filter(def => def.type === "income" && def.manual).map(def => ({
+      id: def.id,
+      label: def.label
+    })),
+    expense: FINANCE_CATEGORY_DEFS.filter(def => def.type === "expense" && def.manual).map(def => ({
+      id: def.id,
+      label: def.label
+    }))
+  };
+  const FINANCE_FEED_UNIT_OPTIONS = [{
+    id: "kg",
+    label: "kg"
+  }, {
+    id: "g",
+    label: "g"
+  }, {
+    id: "lb",
+    label: "lb"
+  }, {
+    id: "sack",
+    label: "sack"
+  }];
   const HATCH_INCUBATION_DAYS = 21;
   const HATCH_ALERT_WINDOW_DAYS = 2;
   const STATUS_DATE_FIELDS = {
@@ -74,6 +165,214 @@ const {
   const dayToNoonIso = dayValue => {
     const day = normalizeDay(dayValue);
     return day ? new Date(`${day}T12:00:00.000Z`).toISOString() : "";
+  };
+  const financeAmountValue = value => {
+    const amount = Number(value);
+    return Number.isFinite(amount) && amount >= 0 ? amount : null;
+  };
+  const financeQuantityValue = value => {
+    const quantity = Number(value);
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+  };
+  const financeNormalizeUnit = value => {
+    const unit = String(value || "").trim().toLowerCase();
+    return FINANCE_FEED_UNIT_OPTIONS.some(option => option.id === unit) ? unit : "";
+  };
+  const financeQuantityToKg = (quantityValue, unitValue, sackKgValue) => {
+    const quantity = financeQuantityValue(quantityValue);
+    const unit = financeNormalizeUnit(unitValue);
+    if (quantity == null || !unit) return null;
+    if (unit === "kg") return quantity;
+    if (unit === "g") return quantity / 1000;
+    if (unit === "lb") return quantity * 0.45359237;
+    if (unit === "sack") {
+      const sackKg = financeAmountValue(sackKgValue);
+      return sackKg != null && sackKg > 0 ? quantity * sackKg : null;
+    }
+    return null;
+  };
+  const buildFeedExpenseMetrics = entry => {
+    const isFeedExpense = String(entry?.category || "").trim() === "feed" && entry?.type !== "income";
+    if (!isFeedExpense) {
+      return {
+        feedTypeId: "",
+        quantity: null,
+        unit: "",
+        sackKg: null,
+        quantityKg: null,
+        unitPrice: null,
+        pricePerKg: null
+      };
+    }
+    const quantity = financeQuantityValue(entry?.quantity);
+    const unit = financeNormalizeUnit(entry?.unit);
+    const sackKg = unit === "sack" ? financeAmountValue(entry?.sackKg) : null;
+    const quantityKg = financeQuantityToKg(quantity, unit, sackKg);
+    const amount = financeAmountValue(entry?.amount);
+    return {
+      feedTypeId: String(entry?.feedTypeId || "").trim(),
+      quantity,
+      unit,
+      sackKg,
+      quantityKg,
+      unitPrice: quantity != null && amount != null ? amount / quantity : null,
+      pricePerKg: quantityKg != null && quantityKg > 0 && amount != null ? amount / quantityKg : null
+    };
+  };
+  const financeCategoryLabel = categoryId => FINANCE_CATEGORY_LABELS[categoryId] || String(categoryId == null ? "" : categoryId).replace(/_/g, " ").replace(/\b\w/g, char => char.toUpperCase()) || "Uncategorized";
+  const normalizeFinanceMonth = value => {
+    const text = String(value == null ? "" : value).trim();
+    if (/^\d{4}-\d{2}$/.test(text)) return text;
+    const day = normalizeDay(text);
+    return day ? day.slice(0, 7) : "";
+  };
+  const shiftFinanceMonth = (monthValue, deltaMonths) => {
+    const month = normalizeFinanceMonth(monthValue);
+    if (!month) return "";
+    const [yearText, monthText] = month.split("-");
+    const year = Number(yearText);
+    const monthIndex = Number(monthText) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return "";
+    const shifted = new Date(Date.UTC(year, monthIndex + (Number(deltaMonths) || 0), 1));
+    return shifted.toISOString().slice(0, 7);
+  };
+  const financeMonthTitle = monthValue => {
+    const month = normalizeFinanceMonth(monthValue);
+    if (!month) return "";
+    const [yearText, monthText] = month.split("-");
+    const year = Number(yearText);
+    const monthIndex = Number(monthText) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return month;
+    return new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString(undefined, {
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC"
+    });
+  };
+  const financeDateScore = value => {
+    const ms = new Date(value || 0).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  const financeSortScore = row => Math.max(financeDateScore(row?.date), financeDateScore(row?.updatedAt), financeDateScore(row?.createdAt));
+  const financeBirdLabel = bird => {
+    const nickname = String(bird?.nickname || "").trim();
+    const tagId = String(bird?.tagId || "").trim();
+    if (nickname && tagId) return `${nickname} (${tagId})`;
+    return nickname || tagId || "Bird";
+  };
+  const buildBirdSaleFinanceRows = ({
+    birds = []
+  } = {}) => (Array.isArray(birds) ? birds : []).filter(bird => bird?.status === "sold").map(bird => {
+    const amount = financeAmountValue(bird?.salePrice);
+    if (amount == null) return null;
+    const date = normalizeDay(bird?.soldDate) || normalizeDay(bird?.updatedAt) || normalizeDay(bird?.createdAt);
+    if (!date) return null;
+    const buyerName = String(bird?.buyerName || "").trim();
+    return {
+      id: `bird-sale-${bird.id}`,
+      source: "bird_sale",
+      sourceId: bird.id,
+      date,
+      type: "income",
+      category: "bird_sale",
+      amount,
+      description: `${financeBirdLabel(bird)} sold`,
+      notes: buyerName ? `Buyer: ${buyerName}` : "",
+      locked: true,
+      createdAt: bird?.createdAt || "",
+      updatedAt: bird?.updatedAt || ""
+    };
+  }).filter(Boolean).sort((a, b) => financeSortScore(b) - financeSortScore(a) || String(b.id || "").localeCompare(String(a.id || "")));
+  const buildFinanceLedger = ({
+    birds = [],
+    financeEntries = []
+  } = {}) => {
+    const manualRows = (Array.isArray(financeEntries) ? financeEntries : []).filter(entry => entry && typeof entry === "object").map(entry => {
+      const amount = financeAmountValue(entry.amount);
+      const date = normalizeDay(entry.date);
+      if (amount == null || !date) return null;
+      const type = entry.type === "income" ? "income" : "expense";
+      const feedMetrics = buildFeedExpenseMetrics({
+        ...entry,
+        type
+      });
+      return {
+        id: entry.id,
+        source: "manual",
+        sourceId: entry.id,
+        date,
+        type,
+        category: String(entry.category || "").trim(),
+        amount,
+        description: String(entry.description || "").trim(),
+        notes: String(entry.notes || "").trim(),
+        locked: false,
+        createdAt: entry.createdAt || "",
+        updatedAt: entry.updatedAt || "",
+        ...feedMetrics
+      };
+    }).filter(Boolean);
+    return [...manualRows, ...buildBirdSaleFinanceRows({
+      birds
+    }).map(row => ({
+      ...row,
+      feedTypeId: "",
+      quantity: null,
+      unit: "",
+      sackKg: null,
+      quantityKg: null,
+      unitPrice: null,
+      pricePerKg: null
+    }))].sort((a, b) => financeSortScore(b) - financeSortScore(a) || String(b.id || "").localeCompare(String(a.id || "")));
+  };
+  const filterFinanceRowsByMonth = (rows, monthValue) => {
+    const month = normalizeFinanceMonth(monthValue);
+    const source = Array.isArray(rows) ? rows : [];
+    if (!month) return source;
+    return source.filter(row => String(row?.date || "").slice(0, 7) === month);
+  };
+  const summarizeFinanceRows = rows => {
+    const source = Array.isArray(rows) ? rows : [];
+    return source.reduce((summary, row) => {
+      const amount = financeAmountValue(row?.amount);
+      if (amount == null) return summary;
+      if (row?.type === "income") summary.income += amount;else summary.expenses += amount;
+      summary.transactions += 1;
+      summary.net = summary.income - summary.expenses;
+      return summary;
+    }, {
+      income: 0,
+      expenses: 0,
+      net: 0,
+      transactions: 0
+    });
+  };
+  const rollupFinanceCategories = rows => {
+    const source = Array.isArray(rows) ? rows : [];
+    const grouped = {
+      income: new Map(),
+      expense: new Map()
+    };
+    source.forEach(row => {
+      const amount = financeAmountValue(row?.amount);
+      const type = row?.type === "income" ? "income" : "expense";
+      const category = String(row?.category || "").trim() || "uncategorized";
+      if (amount == null) return;
+      const current = grouped[type].get(category) || {
+        category,
+        label: financeCategoryLabel(category),
+        type,
+        amount: 0,
+        count: 0
+      };
+      current.amount += amount;
+      current.count += 1;
+      grouped[type].set(category, current);
+    });
+    return {
+      income: [...grouped.income.values()].sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label)),
+      expense: [...grouped.expense.values()].sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label))
+    };
   };
   const getBirdInactiveDate = bird => {
     if (!bird) return "";
@@ -354,10 +653,20 @@ const {
     HATCH_INCUBATION_DAYS,
     HATCH_ALERT_WINDOW_DAYS,
     RETENTION_DAYS,
+    FINANCE_CATEGORY_DEFS,
+    FINANCE_CATEGORY_LABELS,
+    FINANCE_MANUAL_CATEGORY_OPTIONS,
+    FINANCE_FEED_UNIT_OPTIONS,
     STATUS_DATE_FIELDS,
     normalizeTagId,
     normalizeDay,
     addDaysToDay,
+    normalizeFinanceMonth,
+    shiftFinanceMonth,
+    financeMonthTitle,
+    financeCategoryLabel,
+    financeQuantityToKg,
+    buildFeedExpenseMetrics,
     nextCode,
     eggCode,
     outsiderTagCode,
@@ -370,6 +679,11 @@ const {
     stageSuggestion,
     retentionDaysForStatus,
     buildRetentionSnapshot,
+    buildBirdSaleFinanceRows,
+    buildFinanceLedger,
+    filterFinanceRowsByMonth,
+    summarizeFinanceRows,
+    rollupFinanceCategories,
     normalizeBackupPayload,
     completeReminderAndScheduleNext
   };
@@ -377,8 +691,8 @@ const {
 
 /* FILE: src/core/db.js */
 const DB_NAME = "FlockTrackDB";
-const DB_VER = 5;
-const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs"];
+const DB_VER = 6;
+const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
 const CORE_STORES = STORES.filter(s => s !== "birdPhotos");
 const STATUS_COLORS = {
   active: "#15803d",
@@ -469,7 +783,7 @@ const dbDelByIndex = (s, idx, key) => withStore(s, "readwrite", (st, tx) => {
 
 /* FILE: src/core/data-layer.js */
 (function(root) {
-  const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs"];
+  const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
   const DEFERRED_STORES = ["healthEvents", "reminderRules"];
   const toPhotoExportRows = rows => rows.map(photo => ({
     id: photo.id,
@@ -487,7 +801,8 @@ const dbDelByIndex = (s, idx, key) => withStore(s, "readwrite", (st, tx) => {
     eggStates: stores.eggStates || [],
     pens: stores.pens || [],
     feedTypes: stores.feedTypes || [],
-    penFeedLogs: stores.penFeedLogs || []
+    penFeedLogs: stores.penFeedLogs || [],
+    financeEntries: stores.financeEntries || []
   });
   const normalizeDeferredData = stores => ({
     healthEvents: stores.healthEvents || [],
@@ -571,6 +886,16 @@ const fmtNum = n => {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2
   }) : "—";
+};
+const MONEY_FMT_PHP = new Intl.NumberFormat("en-PH", {
+  style: "currency",
+  currency: "PHP",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
+const fmtMoney = n => {
+  const v = Number(n);
+  return Number.isFinite(v) ? MONEY_FMT_PHP.format(v) : "—";
 };
 const fmtPct = (num, den) => den > 0 ? `${Math.round(num / den * 100)}%` : "—";
 const dateMs = d => {
@@ -3624,7 +3949,8 @@ const {
   buildRetentionSnapshot,
   normalizeBackupPayload,
   completeReminderAndScheduleNext,
-  buildAutomaticHatchReminders
+  buildAutomaticHatchReminders,
+  financeCategoryLabel
 } = globalThis.FlockTrackLogic;
 const dataApi = globalThis.FlockTrackData || {};
 const emptyOverviewData = () => ({
@@ -3635,7 +3961,8 @@ const emptyOverviewData = () => ({
   eggStates: [],
   pens: [],
   feedTypes: [],
-  penFeedLogs: []
+  penFeedLogs: [],
+  financeEntries: []
 });
 const emptyDeferredData = () => ({
   healthEvents: [],
@@ -3679,11 +4006,15 @@ const TABS = [{
   lbl: "Stats",
   ic: "📊"
 }, {
+  id: "finance",
+  lbl: "Finance",
+  ic: "💸"
+}, {
   id: "settings",
   lbl: "Settings",
   ic: "⚙️"
 }];
-const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats"];
+const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats", "finance"];
 const HIDEABLE_TAB_IDS = new Set(HIDEABLE_TAB_ORDER);
 const LAZY_SCREEN_DEFS = {
   hatchery: {
@@ -3710,6 +4041,11 @@ const LAZY_SCREEN_DEFS = {
     component: "StatsTab",
     src: "build/chunk-stats.js",
     title: "Stats"
+  },
+  finance: {
+    component: "FinanceTab",
+    src: "build/chunk-finance.js",
+    title: "Finance"
   }
 };
 const DEFERRED_DATA_TABS = new Set(["flock", "search", "stats"]);
@@ -4076,10 +4412,33 @@ const mergeHealthConflictRow = (localRow, remoteRow, preferSide) => {
   });
   return out;
 };
+const mergeFinanceConflictRow = (localRow, remoteRow, preferSide) => {
+  const local = localRow && typeof localRow === "object" ? localRow : {};
+  const remote = remoteRow && typeof remoteRow === "object" ? remoteRow : {};
+  const localRowScore = rowConflictTime(local);
+  const remoteRowScore = rowConflictTime(remote);
+  const localFinanceScore = Math.max(parseDateMs(local.updatedAt), parseDateMs(local.modifiedAt), parseDateMs(local.createdAt), parseDateMs(local.date));
+  const remoteFinanceScore = Math.max(parseDateMs(remote.updatedAt), parseDateMs(remote.modifiedAt), parseDateMs(remote.createdAt), parseDateMs(remote.date));
+  const out = {};
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+  keys.forEach(key => {
+    if (key === "id") {
+      out.id = local.id != null ? local.id : remote.id;
+      return;
+    }
+    if (key === "date" || key === "type" || key === "category" || key === "amount" || key === "description" || key === "notes" || key === "feedTypeId" || key === "quantity" || key === "unit" || key === "sackKg") {
+      out[key] = pickSyncField(local[key], remote[key], localFinanceScore, remoteFinanceScore, preferSide);
+      return;
+    }
+    out[key] = pickSyncField(local[key], remote[key], localRowScore, remoteRowScore, preferSide);
+  });
+  return out;
+};
 const resolveStoreConflictRow = (storeName, localRow, remoteRow, preferSide) => {
   if (storeName === "birds") return mergeBirdConflictRow(localRow, remoteRow, preferSide);
   if (storeName === "measurements") return mergeMeasurementConflictRow(localRow, remoteRow, preferSide);
   if (storeName === "healthEvents") return mergeHealthConflictRow(localRow, remoteRow, preferSide);
+  if (storeName === "financeEntries") return mergeFinanceConflictRow(localRow, remoteRow, preferSide);
   const localScore = rowConflictTime(localRow);
   const remoteScore = rowConflictTime(remoteRow);
   if (localScore > remoteScore) return localRow;
@@ -4321,6 +4680,7 @@ function SearchTab({
   pens,
   feedTypes,
   penFeedLogs,
+  financeEntries,
   measurements,
   healthEvents,
   reminders,
@@ -4427,6 +4787,20 @@ function SearchTab({
       };
     }).slice(0, 24);
     addGroup("health", "Health Events", healthItems);
+    const financeItems = (financeEntries || []).filter(entry => {
+      const feedName = entry.feedTypeId ? feedTypeById.get(entry.feedTypeId)?.name || "" : "";
+      return matchAny([entry.type, financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || ""), entry.category, entry.amount, entry.date, entry.description, entry.notes, feedName, entry.quantity, entry.unit], q);
+    }).sort((a, b) => dateMs(b.updatedAt || b.date) - dateMs(a.updatedAt || a.date)).map(entry => {
+      const feedName = entry.feedTypeId ? feedTypeById.get(entry.feedTypeId)?.name || "" : "";
+      return {
+      id: entry.id,
+      title: entry.description || (financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || "finance")),
+      subtitle: [humanize(entry.type || "expense"), financeCategoryLabel ? financeCategoryLabel(entry.category) : humanize(entry.category || ""), fmtMoney(entry.amount), fmtDate(entry.date)].filter(Boolean).join(" · "),
+      detail: [feedName, entry.quantity != null && entry.unit ? `${fmtNum(entry.quantity)} ${entry.unit}` : "", entry.notes || ""].filter(Boolean).join(" · "),
+      onOpen: () => onOpenTab?.("finance")
+      };
+    }).slice(0, 24);
+    addGroup("finance", "Finance Entries", financeItems);
     const reminderItems = (reminders || []).filter(reminder => {
       const bird = birdById.get(reminder.birdId);
       return matchAny([reminder.title, reminder.note, reminder.dueAt, reminder.completedAt, reminder.status, bird?.tagId, bird?.nickname], q);
@@ -4442,7 +4816,7 @@ function SearchTab({
     }).slice(0, 24);
     addGroup("reminders", "Reminders", reminderItems);
     return out;
-  }, [batchById, batches, birdById, birds, feedTypeById, feedTypes, healthEvents, measurements, onOpenBird, onOpenTab, penById, penFeedLogs, pens, q, reminders]);
+  }, [batchById, batches, birdById, birds, feedTypeById, feedTypes, financeEntries, healthEvents, measurements, onOpenBird, onOpenTab, penById, penFeedLogs, pens, q, reminders]);
   const totalMatches = groups.reduce((sum, group) => sum + group.items.length, 0);
   return React.createElement("div", {
     style: C.body
@@ -4468,7 +4842,7 @@ function SearchTab({
     style: C.inp,
     value: query,
     onChange: e => setQuery(e.target.value),
-    placeholder: "Search birds, pens, batches, logs, reminders..."
+    placeholder: "Search birds, pens, batches, logs, finance, reminders..."
   }), React.createElement("div", {
     style: {
       marginTop: 8,
@@ -4599,6 +4973,7 @@ function App() {
   const [pens, setPens] = useState([]);
   const [feedTypes, setFeedTypes] = useState([]);
   const [penFeedLogs, setPenFeedLogs] = useState([]);
+  const [financeEntries, setFinanceEntries] = useState([]);
   const [photoCache, setPhotoCache] = useState({});
   const [photoExportRows, setPhotoExportRows] = useState([]);
   const [photoExportLoaded, setPhotoExportLoaded] = useState(false);
@@ -4727,6 +5102,7 @@ function App() {
     setPens(core?.pens || []);
     setFeedTypes(core?.feedTypes || []);
     setPenFeedLogs(core?.penFeedLogs || []);
+    setFinanceEntries(core?.financeEntries || []);
     if (normalizedMeasurements.changed) {
       dbReplace("measurements", normalizedMeasurements.rows).catch(console.error);
     }
@@ -4888,6 +5264,7 @@ function App() {
     if (tab === "flock") neededScreens.push("flock");
     if (tab === "settings") neededScreens.push("settings");
     if (tab === "stats") neededScreens.push("stats");
+    if (tab === "finance") neededScreens.push("finance");
     if (recordOverlay?.kind === "bird") neededScreens.push("flock");
     neededScreens.forEach(screenKey => {
       ensureLazyScreenLoaded(screenKey).catch(() => {});
@@ -5103,6 +5480,19 @@ function App() {
   function delPenFeedLog(id) {
     setPenFeedLogs(prev => prev.filter(log => log.id !== id));
     dbDel("penFeedLogs", id);
+  }
+  function addFinanceEntry(entry) {
+    setFinanceEntries(prev => [...prev, entry]);
+    dbPut("financeEntries", entry);
+  }
+  function updFinanceEntry(entry) {
+    if (!entry?.id) return;
+    setFinanceEntries(prev => prev.map(item => item.id === entry.id ? entry : item));
+    dbPut("financeEntries", entry);
+  }
+  function delFinanceEntry(id) {
+    setFinanceEntries(prev => prev.filter(entry => entry.id !== id));
+    dbDel("financeEntries", id);
   }
   function addBird(b) {
     setBirds(p => [...p, b]);
@@ -5943,6 +6333,7 @@ function App() {
     pens: pens,
     feedTypes: feedTypes,
     penFeedLogs: penFeedLogs,
+    financeEntries: financeEntries,
     measurements: measurements,
     healthEvents: healthEvents,
     reminders: allReminders,
@@ -5996,7 +6387,14 @@ function App() {
     eggStates: eggStates
   }, {
     requireDeferredData: true
-  })), tab === "settings" && renderLazyScreenView("settings", {
+  })), tab === "finance" && renderLazyScreenView("finance", {
+    birds: birds,
+    feedTypes: feedTypes,
+    financeEntries: financeEntries,
+    onAddFinanceEntry: addFinanceEntry,
+    onUpdateFinanceEntry: updFinanceEntry,
+    onDeleteFinanceEntry: delFinanceEntry
+  }), tab === "settings" && renderLazyScreenView("settings", {
     section: settingsSection,
     generalTab: settingsGeneralTab,
     onSectionChange: setSettingsSection,
@@ -6006,6 +6404,7 @@ function App() {
     pens: pens,
     feedTypes: feedTypes,
     penFeedLogs: penFeedLogs,
+    financeEntries: financeEntries,
     measurements: measurements,
     healthEvents: healthEvents,
     reminders: allReminders,
@@ -6414,6 +6813,7 @@ if (typeof module !== "undefined" && module.exports) {
       mergeBirdConflictRow,
       mergeMeasurementConflictRow,
       mergeHealthConflictRow,
+      mergeFinanceConflictRow,
       resolveStoreConflictRow,
       mergeStoreRows
     }

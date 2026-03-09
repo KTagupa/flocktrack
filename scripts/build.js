@@ -31,6 +31,9 @@ const bundleConfigs = [{
   ref: "build/chunk-settings.js",
   files: ["src/screens/reminders.js", "src/screens/export.js", "src/screens/settings.js"]
 }, {
+  ref: "build/chunk-finance.js",
+  files: ["src/screens/finance.js"]
+}, {
   ref: "build/chunk-stats.js",
   files: ["src/screens/stats.js"]
 }];
