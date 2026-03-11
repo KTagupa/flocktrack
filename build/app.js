@@ -848,9 +848,9 @@ const {
 
 /* FILE: src/core/db.js */
 const DB_NAME = "FlockTrackDB";
-const DB_VER = 6;
-const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
-const CORE_STORES = STORES.filter(s => s !== "birdPhotos");
+const DB_VER = 7;
+const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "eggProgressPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
+const CORE_STORES = STORES.filter(s => s !== "birdPhotos" && s !== "eggProgressPhotos");
 const STATUS_COLORS = {
   active: "#15803d",
   sold: "#a16207",
@@ -871,6 +871,17 @@ const openDB = () => {
         });else st = e.target.transaction.objectStore(s);
         if (s === "birdPhotos") {
           if (!st.indexNames.contains("birdId")) st.createIndex("birdId", "birdId", {
+            unique: false
+          });
+          if (!st.indexNames.contains("takenAt")) st.createIndex("takenAt", "takenAt", {
+            unique: false
+          });
+        }
+        if (s === "eggProgressPhotos") {
+          if (!st.indexNames.contains("eggId")) st.createIndex("eggId", "eggId", {
+            unique: false
+          });
+          if (!st.indexNames.contains("batchId")) st.createIndex("batchId", "batchId", {
             unique: false
           });
           if (!st.indexNames.contains("takenAt")) st.createIndex("takenAt", "takenAt", {
@@ -942,6 +953,7 @@ const dbDelByIndex = (s, idx, key) => withStore(s, "readwrite", (st, tx) => {
 (function(root) {
   const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
   const DEFERRED_STORES = ["healthEvents", "reminderRules"];
+  const sortEggProgressPhotos = rows => [...(Array.isArray(rows) ? rows : [])].sort((a, b) => (Number(a?.dayNumber) || 0) - (Number(b?.dayNumber) || 0) || new Date(a?.takenAt || 0) - new Date(b?.takenAt || 0));
   const toPhotoExportRows = rows => rows.map(photo => ({
     id: photo.id,
     birdId: photo.birdId,
@@ -981,6 +993,7 @@ const dbDelByIndex = (s, idx, key) => withStore(s, "readwrite", (st, tx) => {
       rows.sort((a, b) => new Date(a.takenAt || 0) - new Date(b.takenAt || 0));
       return rows;
     },
+    loadEggProgressPhotos: async eggId => sortEggProgressPhotos(await dbByIndex("eggProgressPhotos", "eggId", eggId)),
     exportAllStores: async () => {
       const stores = {};
       let total = 0;
@@ -4130,10 +4143,12 @@ const emptyDeferredData = () => ({
   healthEvents: [],
   reminderRules: []
 });
+const appSortEggProgressPhotos = rows => [...(Array.isArray(rows) ? rows : [])].sort((a, b) => (Number(a?.dayNumber) || 0) - (Number(b?.dayNumber) || 0) || new Date(a?.takenAt || 0) - new Date(b?.takenAt || 0));
 const readOverviewData = dataApi.loadOverviewData || dataApi.loadCoreData || (async () => emptyOverviewData());
 const readDeferredData = dataApi.loadDeferredData || (async () => emptyDeferredData());
 const loadPhotoExportRows = dataApi.loadPhotoExportRows || (async () => []);
 const loadBirdPhotos = dataApi.loadBirdPhotos || (async () => []);
+const loadEggProgressPhotos = dataApi.loadEggProgressPhotos || (async () => []);
 const exportAllStores = dataApi.exportAllStores || (async () => ({
   stores: {},
   total: 0
@@ -5137,6 +5152,7 @@ function App() {
   const [penFeedLogs, setPenFeedLogs] = useState([]);
   const [financeEntries, setFinanceEntries] = useState([]);
   const [photoCache, setPhotoCache] = useState({});
+  const [eggPhotoCache, setEggPhotoCache] = useState({});
   const [photoExportRows, setPhotoExportRows] = useState([]);
   const [photoExportLoaded, setPhotoExportLoaded] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -5172,6 +5188,7 @@ function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => calendarMonthStart(new Date()));
   const [calendarSelectedDay, setCalendarSelectedDay] = useState(() => today());
   const photoCacheRef = useRef(photoCache);
+  const eggPhotoCacheRef = useRef(eggPhotoCache);
   const gistSyncRef = useRef(gistSyncConfig);
   const deleteUndoTimer = useRef(null);
   const lazyScreenPromisesRef = useRef({});
@@ -5400,6 +5417,9 @@ function App() {
     photoCacheRef.current = photoCache;
   }, [photoCache]);
   useEffect(() => {
+    eggPhotoCacheRef.current = eggPhotoCache;
+  }, [eggPhotoCache]);
+  useEffect(() => {
     gistSyncRef.current = gistSyncConfig;
   }, [gistSyncConfig]);
   useEffect(() => () => {
@@ -5451,6 +5471,16 @@ function App() {
     setPhotoCache(p => Object.prototype.hasOwnProperty.call(p, birdId) ? p : {
       ...p,
       [birdId]: rows
+    });
+    return rows;
+  }, []);
+  const ensureEggProgressPhotos = useCallback(async eggId => {
+    if (!eggId) return [];
+    if (Object.prototype.hasOwnProperty.call(eggPhotoCacheRef.current, eggId)) return eggPhotoCacheRef.current[eggId];
+    const rows = appSortEggProgressPhotos(await loadEggProgressPhotos(eggId));
+    setEggPhotoCache(p => Object.prototype.hasOwnProperty.call(p, eggId) ? p : {
+      ...p,
+      [eggId]: rows
     });
     return rows;
   }, []);
@@ -5538,6 +5568,7 @@ function App() {
   }, [refreshRetentionInfo, refreshStorageInfo]);
   const applyReplacedStores = useCallback(async () => {
     setPhotoCache({});
+    setEggPhotoCache({});
     setPhotoExportRows([]);
     setPhotoExportLoaded(false);
     setDeleteUndo(null);
@@ -5812,6 +5843,59 @@ function App() {
       return ex ? p.map(x => x.id === es.id ? es : x) : [...p, es];
     });
     dbPut("eggStates", es);
+  }
+  async function addEggProgressPhoto(photo) {
+    if (!photo?.eggId) return;
+    setEggPhotoCache(p => ({
+      ...p,
+      [photo.eggId]: appSortEggProgressPhotos([...(p[photo.eggId] || []), photo])
+    }));
+    try {
+      await dbPut("eggProgressPhotos", photo);
+    } catch (err) {
+      setEggPhotoCache(p => ({
+        ...p,
+        [photo.eggId]: (p[photo.eggId] || []).filter(item => item.id !== photo.id)
+      }));
+      throw err;
+    }
+  }
+  async function updateEggProgressPhoto(photo) {
+    if (!photo?.eggId || !photo?.id) return;
+    const previous = eggPhotoCacheRef.current[photo.eggId] || [];
+    const existed = previous.find(item => item.id === photo.id) || null;
+    setEggPhotoCache(p => ({
+      ...p,
+      [photo.eggId]: appSortEggProgressPhotos((p[photo.eggId] || []).some(item => item.id === photo.id) ? (p[photo.eggId] || []).map(item => item.id === photo.id ? photo : item) : [...(p[photo.eggId] || []), photo])
+    }));
+    try {
+      await dbPut("eggProgressPhotos", photo);
+    } catch (err) {
+      setEggPhotoCache(p => ({
+        ...p,
+        [photo.eggId]: existed ? appSortEggProgressPhotos((p[photo.eggId] || []).map(item => item.id === photo.id ? existed : item)) : appSortEggProgressPhotos(previous)
+      }));
+      throw err;
+    }
+  }
+  async function delEggProgressPhoto(eggId, id) {
+    if (!eggId || !id) return;
+    const removed = (eggPhotoCacheRef.current[eggId] || []).find(photo => photo.id === id) || null;
+    setEggPhotoCache(p => ({
+      ...p,
+      [eggId]: (p[eggId] || []).filter(photo => photo.id !== id)
+    }));
+    try {
+      await dbDel("eggProgressPhotos", id);
+    } catch (err) {
+      if (removed) {
+        setEggPhotoCache(p => ({
+          ...p,
+          [eggId]: appSortEggProgressPhotos([...(p[eggId] || []), removed])
+        }));
+      }
+      throw err;
+    }
   }
   async function addPhoto(ph) {
     const hadCache = Object.prototype.hasOwnProperty.call(photoCacheRef.current, ph.birdId);
@@ -6396,11 +6480,16 @@ function App() {
   }), tab === "hatchery" && renderLazyScreenView("hatchery", {
     batches: batches,
     eggStates: eggStates,
+    eggPhotoCache: eggPhotoCache,
     onAdd: addBatch,
     onUpdate: updBatch,
     onHatch: addBird,
     onDelete: delBatch,
     onSaveEgg: saveEgg,
+    ensureEggPhotos: ensureEggProgressPhotos,
+    onAddEggPhoto: addEggProgressPhoto,
+    onUpdateEggPhoto: updateEggProgressPhoto,
+    onDeleteEggPhoto: delEggProgressPhoto,
     openBatchId: pendingBatchOpenId,
     onOpenBatchHandled: () => setPendingBatchOpenId("")
   }), tab === "pens" && renderLazyScreenView("pens", {

@@ -1,18 +1,60 @@
+const EGG_PROGRESS_TOTAL_DAYS = typeof HATCH_INCUBATION_DAYS === "number" ? HATCH_INCUBATION_DAYS : 21;
+const normalizeEggPhotoDay = (value, totalDays = EGG_PROGRESS_TOTAL_DAYS) => {
+  const max = Math.max(1, Number(totalDays) || EGG_PROGRESS_TOTAL_DAYS);
+  const day = Math.round(Number(value) || 1);
+  return Math.max(1, Math.min(max, day || 1));
+};
+const sortEggProgressPhotos = photos => [...(Array.isArray(photos) ? photos : [])].sort((a, b) => normalizeEggPhotoDay(a?.dayNumber) - normalizeEggPhotoDay(b?.dayNumber) || new Date(a?.takenAt || 0) - new Date(b?.takenAt || 0));
+const eggPhotoDayLabel = (value, totalDays = EGG_PROGRESS_TOTAL_DAYS) => `Day ${normalizeEggPhotoDay(value, totalDays)}`;
+const eggPhotoShortDate = ts => {
+  if (!ts) return "";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+};
+const eggPhotoLongDate = ts => {
+  if (!ts) return "";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+};
 function Batches({
   batches,
   eggStates,
+  eggPhotoCache = {},
   onAdd,
   onUpdate,
   onHatch,
   onDelete,
   onSaveEgg,
+  ensureEggPhotos,
+  onAddEggPhoto,
+  onUpdateEggPhoto,
+  onDeleteEggPhoto,
   openBatchId = "",
   onOpenBatchHandled
 }) {
+  eggPhotoCache = eggPhotoCache && typeof eggPhotoCache === "object" ? eggPhotoCache : {};
   const [showNew, setShowNew] = useState(false);
   const [editB, setEditB] = useState(null);
   const [gridB, setGridB] = useState(null);
   const [eggAct, setEggAct] = useState(null);
+  const [eggPhotoBusy, setEggPhotoBusy] = useState(false);
+  const [eggPhotoStatus, setEggPhotoStatus] = useState({
+    kind: "idle",
+    msg: ""
+  });
+  const [photoDayDraft, setPhotoDayDraft] = useState("");
   const [form, setForm] = useState({
     date: today(),
     incubationStartDate: today(),
@@ -32,7 +74,11 @@ function Batches({
     notes: ""
   });
   const [failNote, setFailNote] = useState("");
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+  const statusTimer = useRef(null);
   const newCode = nextCode(batches);
+  const eggStateById = useMemo(() => new Map(eggStates.map(state => [state.id, state])), [eggStates]);
   const batchStatsById = useMemo(() => {
     const map = new Map();
     batches.forEach(b => map.set(b.id, {
@@ -93,6 +139,16 @@ function Batches({
     eggCount: gridB.eggCount || 0
   } : null;
   const gridIncubation = gridB?.id ? batchIncubationById.get(gridB.id) || null : null;
+  const activeEggState = eggAct?.code ? eggStateById.get(eggAct.code) || null : null;
+  const activeEggIncubation = eggAct?.batchId ? batchIncubationById.get(eggAct.batchId) || null : null;
+  const activeEggPhotos = useMemo(() => eggAct?.code ? sortEggProgressPhotos(eggPhotoCache[eggAct.code] || []) : [], [eggAct?.code, eggPhotoCache]);
+  const selectedEggPhoto = useMemo(() => {
+    if (!activeEggPhotos.length) return null;
+    return activeEggPhotos.find(photo => photo.id === eggAct?.selectedPhotoId) || activeEggPhotos[activeEggPhotos.length - 1];
+  }, [activeEggPhotos, eggAct?.selectedPhotoId]);
+  useEffect(() => () => {
+    if (statusTimer.current) clearTimeout(statusTimer.current);
+  }, []);
   useEffect(() => {
     if (!openBatchId) return;
     const targetBatch = batches.find(batch => batch.id === openBatchId) || null;
@@ -108,6 +164,54 @@ function Batches({
     }
     if (nextBatch !== gridB) setGridB(nextBatch);
   }, [batches, gridB]);
+  useEffect(() => {
+    if (!eggAct?.code || typeof ensureEggPhotos !== "function" || Object.prototype.hasOwnProperty.call(eggPhotoCache, eggAct.code)) return;
+    ensureEggPhotos(eggAct.code).catch(console.error);
+  }, [eggAct?.code, eggPhotoCache, ensureEggPhotos]);
+  useEffect(() => {
+    if (!eggAct?.code) return;
+    const hasSelected = activeEggPhotos.some(photo => photo.id === eggAct.selectedPhotoId);
+    const nextSelectedId = activeEggPhotos.length ? hasSelected ? eggAct.selectedPhotoId : activeEggPhotos[activeEggPhotos.length - 1].id : "";
+    if (nextSelectedId === (eggAct.selectedPhotoId || "")) return;
+    setEggAct(prev => prev?.code === eggAct.code ? {
+      ...prev,
+      selectedPhotoId: nextSelectedId
+    } : prev);
+  }, [activeEggPhotos, eggAct?.code, eggAct?.selectedPhotoId]);
+  useEffect(() => {
+    if (!selectedEggPhoto) {
+      setPhotoDayDraft("");
+      return;
+    }
+    const nextDraft = String(normalizeEggPhotoDay(selectedEggPhoto.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS));
+    setPhotoDayDraft(prev => prev === nextDraft ? prev : nextDraft);
+  }, [activeEggIncubation?.totalDays, selectedEggPhoto?.dayNumber, selectedEggPhoto?.id]);
+  function flashEggPhoto(kind, msg) {
+    if (statusTimer.current) clearTimeout(statusTimer.current);
+    setEggPhotoStatus({
+      kind,
+      msg
+    });
+    if (kind === "busy") return;
+    statusTimer.current = setTimeout(() => setEggPhotoStatus({
+      kind: "idle",
+      msg: ""
+    }), 2600);
+  }
+  function closeEggModal() {
+    setEggAct(null);
+    setEggPhotoBusy(false);
+    setPhotoDayDraft("");
+    if (statusTimer.current) clearTimeout(statusTimer.current);
+    setEggPhotoStatus({
+      kind: "idle",
+      msg: ""
+    });
+  }
+  function resolveEggPhotoDay(batchId) {
+    const incubation = batchIncubationById.get(batchId) || null;
+    return normalizeEggPhotoDay(incubation?.dayNumber || 1, incubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS);
+  }
   function saveBatch() {
     if (!form.count) return;
     onAdd({
@@ -162,12 +266,13 @@ function Batches({
     });
   }
   function tapEgg(code, batchId, idx) {
-    if (eggStates.find(s => s.id === code)) return;
+    const existingState = eggStateById.get(code) || null;
     setEggAct({
       code,
       batchId,
       idx,
-      mode: null
+      mode: existingState ? "details" : null,
+      selectedPhotoId: ""
     });
     setHf({
       breed: "",
@@ -176,6 +281,98 @@ function Batches({
       notes: ""
     });
     setFailNote("");
+  }
+  function cycleEggPhoto(direction) {
+    if (!selectedEggPhoto || activeEggPhotos.length < 2) return;
+    const currentIndex = activeEggPhotos.findIndex(photo => photo.id === selectedEggPhoto.id);
+    if (currentIndex < 0) return;
+    const nextIndex = Math.max(0, Math.min(activeEggPhotos.length - 1, currentIndex + direction));
+    if (nextIndex === currentIndex) return;
+    setEggAct(prev => prev ? {
+      ...prev,
+      selectedPhotoId: activeEggPhotos[nextIndex].id
+    } : prev);
+  }
+  async function handleEggPhotoFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) {
+      e.target.value = "";
+      return;
+    }
+    if (!eggAct || typeof onAddEggPhoto !== "function") {
+      e.target.value = "";
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      flashEggPhoto("err", "Please select an image file.");
+      e.target.value = "";
+      return;
+    }
+    setEggPhotoBusy(true);
+    flashEggPhoto("busy", "Processing photo...");
+    try {
+      const takenAt = new Date().toISOString();
+      const dataUrl = await compressImg(file);
+      const photo = {
+        id: uid(),
+        eggId: eggAct.code,
+        batchId: eggAct.batchId,
+        idx: eggAct.idx,
+        dayNumber: resolveEggPhotoDay(eggAct.batchId),
+        takenAt,
+        createdAt: takenAt,
+        sizeKb: Math.round(dataUrl.length * .75 / 1024),
+        dataUrl
+      };
+      await onAddEggPhoto(photo);
+      setEggAct(prev => prev?.code === photo.eggId ? {
+        ...prev,
+        selectedPhotoId: photo.id
+      } : prev);
+      flashEggPhoto("ok", `Photo saved for ${eggPhotoDayLabel(photo.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}.`);
+    } catch (err) {
+      console.error(err);
+      flashEggPhoto("err", "Could not save egg photo. Please try again.");
+    } finally {
+      setEggPhotoBusy(false);
+      e.target.value = "";
+    }
+  }
+  async function saveSelectedEggPhotoDay() {
+    if (!selectedEggPhoto || typeof onUpdateEggPhoto !== "function") return;
+    const nextDay = normalizeEggPhotoDay(photoDayDraft, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS);
+    if (nextDay === normalizeEggPhotoDay(selectedEggPhoto.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)) {
+      flashEggPhoto("ok", "Day label is already up to date.");
+      return;
+    }
+    setEggPhotoBusy(true);
+    try {
+      await onUpdateEggPhoto({
+        ...selectedEggPhoto,
+        dayNumber: nextDay,
+        modifiedAt: new Date().toISOString()
+      });
+      flashEggPhoto("ok", `Photo moved to ${eggPhotoDayLabel(nextDay, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}.`);
+    } catch (err) {
+      console.error(err);
+      flashEggPhoto("err", "Could not update the day label.");
+    } finally {
+      setEggPhotoBusy(false);
+    }
+  }
+  async function deleteSelectedEggPhoto() {
+    if (!selectedEggPhoto || !eggAct?.code || typeof onDeleteEggPhoto !== "function") return;
+    if (!window.confirm("Delete this egg photo?")) return;
+    setEggPhotoBusy(true);
+    try {
+      await onDeleteEggPhoto(eggAct.code, selectedEggPhoto.id);
+      flashEggPhoto("ok", "Photo removed.");
+    } catch (err) {
+      console.error(err);
+      flashEggPhoto("err", "Could not remove this egg photo.");
+    } finally {
+      setEggPhotoBusy(false);
+    }
   }
   function doHatch() {
     const bird = {
@@ -200,7 +397,7 @@ function Batches({
       date: hf.hatchDate,
       note: ""
     });
-    setEggAct(null);
+    closeEggModal();
   }
   function doFail() {
     onSaveEgg({
@@ -212,7 +409,7 @@ function Batches({
       date: today(),
       note: failNote
     });
-    setEggAct(null);
+    closeEggModal();
   }
   const newBatchModal = showNew ? React.createElement(Modal, {
     title: "New Batch · " + newCode,
@@ -333,7 +530,7 @@ function Batches({
     length: gridB.eggCount
   }, (_, i) => {
     const code = eggCode(gridB.code, i);
-    const st = eggStates.find(s => s.id === code);
+    const st = eggStateById.get(code) || null;
     const isH = st?.status === "hatched";
     const isF = st?.status === "failed";
     return React.createElement("div", {
@@ -348,7 +545,7 @@ function Batches({
         flexDirection: "column",
         alignItems: "center",
         gap: 3,
-        cursor: st ? "default" : "pointer",
+        cursor: "pointer",
         userSelect: "none"
       }
     }, React.createElement("span", {
@@ -563,8 +760,313 @@ function Batches({
       gap: 8
     }
   }, gridEggCells))) : null;
-  const eggModePickerEl = eggAct?.mode === null ? React.createElement("div", {
+  const eggStatusTone = activeEggState?.status === "hatched" ? "#15803d" : activeEggState?.status === "failed" ? "#b91c1c" : "#b45309";
+  const eggStatusIcon = activeEggState?.status === "hatched" ? "\uD83D\uDC23" : activeEggState?.status === "failed" ? "\uD83D\uDC80" : "\uD83E\uDD5A";
+  const eggStatusLabel = activeEggState?.status === "hatched" ? "Hatched" : activeEggState?.status === "failed" ? "Failed" : "Pending";
+  const eggStatusDetail = activeEggState ? activeEggState.status === "hatched" ? `Hatched on ${fmtDate(activeEggState.date)}` : `Marked failed on ${fmtDate(activeEggState.date)}` : activeEggIncubation ? activeEggIncubation.isScheduled ? `Incubation starts ${fmtDate(activeEggIncubation.incubationStartDate)}` : `${eggPhotoDayLabel(activeEggIncubation.dayNumber, activeEggIncubation.totalDays)} of ${activeEggIncubation.totalDays}` : "No final outcome yet";
+  const eggStatusNote = activeEggState?.status === "failed" ? activeEggState.note || "No failure note saved." : activeEggState?.status === "hatched" ? activeEggState.birdId ? "Chick record linked to this egg." : "Chick record saved." : activeEggIncubation?.currentStage ? `${activeEggIncubation.currentStage.label} \u00B7 ${activeEggIncubation.currentStage.humidity}` : "Add progress photos during candling, then edit the day if the upload was late.";
+  const selectedEggPhotoIndex = selectedEggPhoto ? activeEggPhotos.findIndex(photo => photo.id === selectedEggPhoto.id) : -1;
+  const eggSummaryCardEl = eggAct ? React.createElement("div", {
     style: {
+      marginTop: 14,
+      padding: 14,
+      borderRadius: 16,
+      border: `1px solid ${eggStatusTone}33`,
+      background: activeEggState?.status === "hatched" ? "#f0fdf4" : activeEggState?.status === "failed" ? "#fef2f2" : "#fff7ed"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, React.createElement("div", {
+    style: {
+      width: 42,
+      height: 42,
+      borderRadius: 12,
+      display: "grid",
+      placeItems: "center",
+      background: `${eggStatusTone}18`,
+      fontSize: 22
+    }
+  }, eggStatusIcon), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      letterSpacing: ".05em",
+      textTransform: "uppercase",
+      color: eggStatusTone
+    }
+  }, eggStatusLabel), React.createElement("div", {
+    style: {
+      marginTop: 3,
+      fontSize: 16,
+      fontWeight: 900,
+      color: "#0f172a"
+    }
+  }, eggStatusDetail))), React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 13,
+      lineHeight: 1.5,
+      color: "#475569"
+    }
+  }, eggStatusNote)) : null;
+  const eggPhotoContentEl = selectedEggPhoto ? React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      position: "relative",
+      marginTop: 12,
+      borderRadius: 18,
+      overflow: "hidden",
+      background: "#0f172a",
+      minHeight: 260,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, selectedEggPhoto.dataUrl ? React.createElement("img", {
+    src: selectedEggPhoto.dataUrl,
+    alt: `${eggAct?.code || "Egg"} ${eggPhotoDayLabel(selectedEggPhoto.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}`,
+    style: {
+      width: "100%",
+      maxHeight: "42vh",
+      objectFit: "contain",
+      display: "block"
+    }
+  }) : React.createElement("div", {
+    style: {
+      color: "#cbd5e1",
+      fontSize: 14,
+      fontWeight: 700
+    }
+  }, "Image unavailable"), React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 10,
+      left: 10,
+      background: "#ffffffd9",
+      borderRadius: 999,
+      padding: "6px 10px",
+      fontSize: 12,
+      fontWeight: 800,
+      color: "#0f172a"
+    }
+  }, eggPhotoDayLabel(selectedEggPhoto.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)), React.createElement("div", {
+    style: {
+      position: "absolute",
+      bottom: 10,
+      right: 10,
+      background: "#0f172acc",
+      borderRadius: 999,
+      padding: "5px 9px",
+      fontSize: 11,
+      fontWeight: 700,
+      color: "#e2e8f0"
+    }
+  }, `~${selectedEggPhoto.sizeKb || 0}KB`)), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr auto 1fr",
+      gap: 8,
+      alignItems: "center",
+      marginTop: 12
+    }
+  }, React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      opacity: selectedEggPhotoIndex <= 0 ? 0.55 : 1
+    },
+    onClick: () => cycleEggPhoto(-1),
+    disabled: selectedEggPhotoIndex <= 0
+  }, "\u2190 Previous"), React.createElement("div", {
+    style: {
+      textAlign: "center",
+      fontSize: 12,
+      color: "#475569",
+      fontWeight: 700
+    }
+  }, eggPhotoShortDate(selectedEggPhoto.takenAt) || "No upload date"), React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      opacity: selectedEggPhotoIndex >= activeEggPhotos.length - 1 ? 0.55 : 1
+    },
+    onClick: () => cycleEggPhoto(1),
+    disabled: selectedEggPhotoIndex >= activeEggPhotos.length - 1
+  }, "Next \u2192")), React.createElement("div", {
+    style: {
+      marginTop: 12,
+      display: "grid",
+      gap: 10
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#475569"
+    }
+  }, "Uploaded ", eggPhotoLongDate(selectedEggPhoto.takenAt) || "unknown time"), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "minmax(0,1fr) auto auto",
+      gap: 8,
+      alignItems: "end"
+    }
+  }, React.createElement(FL, {
+    lbl: "Incubation Day"
+  }, React.createElement("input", {
+    style: C.inp,
+    type: "number",
+    min: "1",
+    max: String(activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS),
+    value: photoDayDraft,
+    onChange: e => setPhotoDayDraft(e.target.value)
+  })), React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      padding: "13px 16px",
+      whiteSpace: "nowrap"
+    },
+    onClick: saveSelectedEggPhotoDay,
+    disabled: eggPhotoBusy
+  }, eggPhotoBusy ? "Saving..." : "Save Day"), React.createElement("button", {
+    style: {
+      background: "#ffffff",
+      color: "#b91c1c",
+      border: "1px solid #fecaca",
+      borderRadius: 12,
+      padding: "13px 16px",
+      fontSize: 14,
+      fontWeight: 800,
+      cursor: "pointer",
+      whiteSpace: "nowrap"
+    },
+    onClick: deleteSelectedEggPhoto,
+    disabled: eggPhotoBusy
+  }, "Delete")))) : React.createElement("div", {
+    style: {
+      marginTop: 12,
+      borderRadius: 18,
+      border: "2px dashed #cbd5e1",
+      background: "#ffffff",
+      minHeight: 220,
+      display: "grid",
+      placeItems: "center",
+      textAlign: "center",
+      padding: 18
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 34
+    }
+  }, "\uD83D\uDCF7"), React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 15,
+      fontWeight: 800,
+      color: "#0f172a"
+    }
+  }, "No progress photos yet"), React.createElement("div", {
+    style: {
+      marginTop: 6,
+      fontSize: 13,
+      color: "#475569",
+      lineHeight: 1.5
+    }
+  }, "Add a candling photo now. It will default to ", eggPhotoDayLabel(resolveEggPhotoDay(eggAct?.batchId), activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS), ".")));
+  const eggPhotoViewerEl = eggAct ? React.createElement("div", {
+    style: {
+      marginTop: 14,
+      padding: 14,
+      borderRadius: 18,
+      border: "1px solid #d9e3ef",
+      background: "#f8fafc"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      letterSpacing: ".05em",
+      textTransform: "uppercase",
+      color: "#475569"
+    }
+  }, "Progress photos"), React.createElement("div", {
+    style: {
+      marginTop: 3,
+      fontSize: 15,
+      fontWeight: 800,
+      color: "#0f172a"
+    }
+  }, activeEggPhotos.length ? `${selectedEggPhotoIndex + 1} of ${activeEggPhotos.length}` : "No photos yet")), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#475569",
+      fontWeight: 700
+    }
+  }, activeEggIncubation && !activeEggIncubation.isScheduled ? `${eggPhotoDayLabel(activeEggIncubation.dayNumber, activeEggIncubation.totalDays)} default` : "Day label is editable")), eggPhotoContentEl, React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginTop: 12
+    }
+  }, React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      color: eggPhotoBusy ? "#475569" : "#b45309",
+      borderColor: eggPhotoBusy ? "#cbd5e1" : "#fdba74"
+    },
+    onClick: () => camRef.current && camRef.current.click(),
+    disabled: eggPhotoBusy
+  }, eggPhotoBusy ? "Saving..." : "\uD83D\uDCF8 Capture"), React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0
+    },
+    onClick: () => galRef.current && galRef.current.click(),
+    disabled: eggPhotoBusy
+  }, eggPhotoBusy ? "Saving..." : "\uD83D\uDDBC Pick File"), React.createElement("input", {
+    ref: camRef,
+    type: "file",
+    accept: "image/*",
+    capture: "environment",
+    style: {
+      display: "none"
+    },
+    onChange: handleEggPhotoFile,
+    disabled: eggPhotoBusy
+  }), React.createElement("input", {
+    ref: galRef,
+    type: "file",
+    accept: "image/*",
+    style: {
+      display: "none"
+    },
+    onChange: handleEggPhotoFile,
+    disabled: eggPhotoBusy
+  })), eggPhotoStatus.kind !== "idle" && React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 13,
+      textAlign: "center",
+      color: eggPhotoStatus.kind === "ok" ? "#15803d" : eggPhotoStatus.kind === "err" ? "#b91c1c" : "#475569",
+      fontWeight: eggPhotoStatus.kind === "busy" ? 700 : 600
+    }
+  }, eggPhotoStatus.msg)) : null;
+  const eggModePickerEl = !activeEggState && eggAct?.mode === null ? React.createElement("div", {
+    style: {
+      marginTop: 14,
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 12
@@ -622,7 +1124,15 @@ function Batches({
       color: "#b91c1c"
     }
   }, "Failed \u2717"))) : null;
-  const eggHatchFormEl = eggAct?.mode === "hatch" ? React.createElement("div", null, React.createElement(FL, {
+  const eggHatchFormEl = !activeEggState && eggAct?.mode === "hatch" ? React.createElement("div", {
+    style: {
+      marginTop: 14,
+      padding: 14,
+      borderRadius: 16,
+      border: "1px solid #bbf7d0",
+      background: "#f0fdf4"
+    }
+  }, React.createElement(FL, {
     lbl: "Hatch Date"
   }, React.createElement("input", {
     style: C.inp,
@@ -686,7 +1196,15 @@ function Batches({
     },
     onClick: doHatch
   }, "\uD83D\uDC23 Confirm"))) : null;
-  const eggFailFormEl = eggAct?.mode === "fail" ? React.createElement("div", null, React.createElement(FL, {
+  const eggFailFormEl = !activeEggState && eggAct?.mode === "fail" ? React.createElement("div", {
+    style: {
+      marginTop: 14,
+      padding: 14,
+      borderRadius: 16,
+      border: "1px solid #fecaca",
+      background: "#fef2f2"
+    }
+  }, React.createElement(FL, {
     lbl: "Reason"
   }, React.createElement("textarea", {
     style: C.ta,
@@ -719,55 +1237,74 @@ function Batches({
     },
     onClick: doFail
   }, "\uD83D\uDC80 Mark Failed"))) : null;
+  const eggModalSubtitle = activeEggState ? "Outcome saved. Progress photos stay editable." : eggAct?.mode === "hatch" ? "Save the chick details for this egg." : eggAct?.mode === "fail" ? "Save why this egg failed." : "Track photos now, then mark hatch or fail when ready.";
   const eggActionModalEl = eggAct ? React.createElement("div", {
     style: {
       position: "fixed",
       inset: 0,
       background: "#000000c0",
       zIndex: 300,
-      display: "flex",
-      alignItems: "flex-end"
+      overflowY: "auto",
+      padding: "18px 10px 40px"
     }
   }, React.createElement("div", {
     style: {
+      maxWidth: 640,
+      margin: "0 auto",
       background: "#ffffff",
       border: "1px solid #d9e3ef",
-      borderTopLeftRadius: 20,
-      borderTopRightRadius: 20,
-      width: "100%",
-      padding: 20,
-      paddingBottom: 36
+      borderRadius: 22,
+      padding: 18,
+      paddingBottom: 26
     }
   }, React.createElement("div", {
     style: {
-      textAlign: "center",
-      marginBottom: 12
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 12
     }
   }, React.createElement("div", {
     style: {
-      fontSize: 36
+      width: 54,
+      height: 54,
+      borderRadius: 16,
+      display: "grid",
+      placeItems: "center",
+      background: `${eggStatusTone}18`,
+      fontSize: 28,
+      flexShrink: 0
     }
-  }, "\uD83E\uDD5A"), React.createElement("div", {
+  }, eggStatusIcon), React.createElement("div", {
     style: {
-      fontSize: 18,
+      flex: 1
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 21,
       fontWeight: 900,
-      color: "#b45309",
-      marginTop: 4
+      color: "#0f172a"
     }
   }, eggAct.code), React.createElement("div", {
     style: {
-      fontSize: 14,
+      marginTop: 3,
+      fontSize: 13,
       color: "#475569",
-      marginTop: 2
+      lineHeight: 1.5
     }
-  }, "What happened to this egg?")), eggModePickerEl, eggHatchFormEl, eggFailFormEl, React.createElement("button", {
-    onClick: () => setEggAct(null),
+  }, eggModalSubtitle)), React.createElement("button", {
+    onClick: closeEggModal,
+    style: {
+      ...C.sec,
+      marginTop: 0
+    }
+  }, "\u2715")), eggSummaryCardEl, eggPhotoViewerEl, eggModePickerEl, eggHatchFormEl, eggFailFormEl, React.createElement("button", {
+    onClick: closeEggModal,
     style: {
       ...C.sec,
       width: "100%",
-      marginTop: 12
+      marginTop: 14
     }
-  }, "Cancel"))) : null;
+  }, "Close"))) : null;
   return React.createElement("div", {
     style: C.body
   }, React.createElement("div", {

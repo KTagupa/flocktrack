@@ -1,6 +1,7 @@
 (function(root) {
   const OVERVIEW_STORES = ["eggBatches", "birds", "measurements", "reminderInstances", "eggStates", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
   const DEFERRED_STORES = ["healthEvents", "reminderRules"];
+  const sortEggProgressPhotos = rows => [...(Array.isArray(rows) ? rows : [])].sort((a, b) => (Number(a?.dayNumber) || 0) - (Number(b?.dayNumber) || 0) || new Date(a?.takenAt || 0) - new Date(b?.takenAt || 0));
   const toPhotoExportRows = rows => rows.map(photo => ({
     id: photo.id,
     birdId: photo.birdId,
@@ -40,6 +41,7 @@
       rows.sort((a, b) => new Date(a.takenAt || 0) - new Date(b.takenAt || 0));
       return rows;
     },
+    loadEggProgressPhotos: async eggId => sortEggProgressPhotos(await dbByIndex("eggProgressPhotos", "eggId", eggId)),
     exportAllStores: async () => {
       const stores = {};
       let total = 0;

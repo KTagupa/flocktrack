@@ -1,7 +1,7 @@
 const DB_NAME = "FlockTrackDB";
-const DB_VER = 6;
-const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
-const CORE_STORES = STORES.filter(s => s !== "birdPhotos");
+const DB_VER = 7;
+const STORES = ["eggBatches", "birds", "measurements", "healthEvents", "reminderRules", "reminderInstances", "eggStates", "birdPhotos", "eggProgressPhotos", "pens", "feedTypes", "penFeedLogs", "financeEntries"];
+const CORE_STORES = STORES.filter(s => s !== "birdPhotos" && s !== "eggProgressPhotos");
 const STATUS_COLORS = {
   active: "#15803d",
   sold: "#a16207",
@@ -22,6 +22,17 @@ const openDB = () => {
         });else st = e.target.transaction.objectStore(s);
         if (s === "birdPhotos") {
           if (!st.indexNames.contains("birdId")) st.createIndex("birdId", "birdId", {
+            unique: false
+          });
+          if (!st.indexNames.contains("takenAt")) st.createIndex("takenAt", "takenAt", {
+            unique: false
+          });
+        }
+        if (s === "eggProgressPhotos") {
+          if (!st.indexNames.contains("eggId")) st.createIndex("eggId", "eggId", {
+            unique: false
+          });
+          if (!st.indexNames.contains("batchId")) st.createIndex("batchId", "batchId", {
             unique: false
           });
           if (!st.indexNames.contains("takenAt")) st.createIndex("takenAt", "takenAt", {
