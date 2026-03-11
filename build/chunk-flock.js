@@ -270,11 +270,21 @@ const birdShiftDay = (dayValue, delta) => {
 
 function latestPhotoWithImage(photos) {
   const list = Array.isArray(photos) ? photos : [];
-  for (let idx = list.length - 1; idx >= 0; idx--) {
+  let best = null;
+  let bestTime = -Infinity;
+  let bestIdx = -1;
+  for (let idx = 0; idx < list.length; idx += 1) {
     const photo = list[idx];
-    if (photo?.dataUrl) return photo;
+    if (!photo?.dataUrl) continue;
+    const stamp = new Date(photo.takenAt || photo.createdAt || 0).getTime();
+    const score = Number.isFinite(stamp) ? stamp : -Infinity;
+    if (!best || score > bestTime || score === bestTime && idx > bestIdx) {
+      best = photo;
+      bestTime = score;
+      bestIdx = idx;
+    }
   }
-  return null;
+  return best;
 }
 
 function stageSliderIconLabel(stage) {
@@ -397,6 +407,7 @@ function BirdsScreen({
   const [obCount, setObCount] = useState(1);
   const [tagAuto, setTagAuto] = useState(true);
   const [listPhotoPreview, setListPhotoPreview] = useState(null);
+  const [recentPhotoCollapsed, setRecentPhotoCollapsed] = useState(false);
   const [flockLayout, setFlockLayout] = useState("cards");
   const [tableMode, setTableMode] = useState("view");
   const [tablePreset, setTablePreset] = useState("basic");
@@ -405,6 +416,10 @@ function BirdsScreen({
   const [tableDraftById, setTableDraftById] = useState({});
   const [tableError, setTableError] = useState("");
   const [tableSaveBusy, setTableSaveBusy] = useState(false);
+  const lastHandledOpenRequestRef = useRef({
+    key: "",
+    found: false
+  });
   function makeBirdForm(tagId = outsiderTagCode(obBatch, obIndiv)) {
     return {
       tagId,
@@ -520,7 +535,41 @@ function BirdsScreen({
   const [showFloatingNav, setShowFloatingNav] = useState(false);
   const [showFloatingSummary, setShowFloatingSummary] = useState(false);
   const selId = sel && sel.id;
+  function openPhotoPreview(photo, label) {
+    if (!photo?.dataUrl) return;
+    const detail = [photo.takenAt ? fmtDateTime(photo.takenAt) : "", photo.sizeKb ? `~${photo.sizeKb}KB` : ""].filter(Boolean).join(" · ");
+    setListPhotoPreview({
+      dataUrl: photo.dataUrl,
+      label: label || "",
+      detail
+    });
+  }
+  function resolveFloatingUiScrollHost() {
+    const anchorEl = headerNavRef.current || summaryRef.current;
+    if (!anchorEl || !anchorEl.parentElement || typeof window.getComputedStyle !== "function") return window;
+    let current = anchorEl.parentElement;
+    while (current) {
+      if (current === document.body || current === document.documentElement) return window;
+      const style = window.getComputedStyle(current);
+      const overflowY = style?.overflowY || "";
+      if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") return current;
+      current = current.parentElement;
+    }
+    return window;
+  }
   function scrollPageTop() {
+    const scrollHost = resolveFloatingUiScrollHost();
+    if (scrollHost !== window && typeof scrollHost.scrollTo === "function") {
+      try {
+        scrollHost.scrollTo({
+          top: 0,
+          behavior: "smooth"
+        });
+      } catch {
+        scrollHost.scrollTop = 0;
+      }
+      return;
+    }
     try {
       window.scrollTo({
         top: 0,
@@ -547,17 +596,24 @@ function BirdsScreen({
   useEffect(() => {
     const pendingBirdId = openBirdId || window.__flockTrackOpenBirdId;
     const pendingPenId = openBirdId ? openBirdPenId : window.__flockTrackOpenBirdPenId;
-    if (!pendingBirdId) return;
-    if (sel?.id === pendingBirdId) {
-      if (navPenScopeId !== (pendingPenId || "")) setNavPenScopeId(pendingPenId || "");
-      if (!openBirdId) {
-        window.__flockTrackOpenBirdId = null;
-        window.__flockTrackOpenBirdPenId = null;
-      }
+    if (!pendingBirdId) {
+      lastHandledOpenRequestRef.current = {
+        key: "",
+        found: false
+      };
       return;
     }
     const targetBird = birds.find(b => b.id === pendingBirdId);
+    const requestKey = `${openBirdId ? "prop" : "window"}:${pendingBirdId}:${pendingPenId || ""}`;
+    const lastHandledRequest = lastHandledOpenRequestRef.current;
+    if (lastHandledRequest.key === requestKey && (lastHandledRequest.found || !targetBird)) return;
+    lastHandledOpenRequestRef.current = {
+      key: requestKey,
+      found: !!targetBird
+    };
     if (!targetBird) {
+      setSel(null);
+      setNavPenScopeId(pendingPenId || "");
       if (!openBirdId) {
         window.__flockTrackOpenBirdId = null;
         window.__flockTrackOpenBirdPenId = null;
@@ -572,7 +628,7 @@ function BirdsScreen({
       window.__flockTrackOpenBirdPenId = null;
     }
     scrollPageTop();
-  }, [birds, navPenScopeId, openBirdId, openBirdPenId, sel?.id]);
+  });
   const closeSelectedBird = useCallback(() => {
     setNavPenScopeId("");
     if (typeof onRequestClose === "function") {
@@ -589,9 +645,9 @@ function BirdsScreen({
     setInfoForm(makeInfoForm(sel));
   }, [sel?.id, sel?.tagId, sel?.nickname, sel?.hatchDate, sel?.status, sel?.stage, sel?.breed, sel?.sex, sel?.originBatchId, sel?.penId, sel?.notes, sel?.soldDate, sel?.buyerName, sel?.salePrice, sel?.deceasedDate, sel?.causeOfDeath, sel?.culledDate, sel?.cullReason]);
   useEffect(() => {
-    if (!selId || tab !== "photos" && tab !== "timeline") return;
+    if (!selId || typeof ensureBirdPhotos !== "function") return;
     ensureBirdPhotos(selId).catch(console.error);
-  }, [ensureBirdPhotos, selId, tab]);
+  }, [ensureBirdPhotos, selId]);
   useEffect(() => {
     if (!measurementUnitSlides.length) return;
     if (measurementUnitSlides.some(unit => unit.id === mf.unit)) return;
@@ -606,30 +662,33 @@ function BirdsScreen({
       setShowFloatingSummary(false);
       return;
     }
+    const scrollHost = resolveFloatingUiScrollHost();
     const updateFloatingUi = () => {
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const hostTop = scrollHost === window ? 0 : scrollHost.getBoundingClientRect().top;
+      const hostBottom = scrollHost === window ? window.innerHeight || document.documentElement.clientHeight || 0 : scrollHost.getBoundingClientRect().bottom;
       const navEl = headerNavRef.current;
       if (navEl) {
         const navRect = navEl.getBoundingClientRect();
-        setShowFloatingNav(navRect.bottom < 72 || navRect.top > viewportHeight - 72);
+        setShowFloatingNav(navRect.bottom < hostTop + 72 || navRect.top > hostBottom - 72);
       } else {
         setShowFloatingNav(false);
       }
       const summaryEl = summaryRef.current;
       if (summaryEl) {
         const summaryRect = summaryEl.getBoundingClientRect();
-        setShowFloatingSummary(summaryRect.bottom < 72);
+        setShowFloatingSummary(summaryRect.bottom < hostTop + 72);
       } else {
         setShowFloatingSummary(false);
       }
     };
     updateFloatingUi();
-    window.addEventListener("scroll", updateFloatingUi, {
+    const scrollTarget = scrollHost === window ? window : scrollHost;
+    scrollTarget.addEventListener("scroll", updateFloatingUi, {
       passive: true
     });
     window.addEventListener("resize", updateFloatingUi);
     return () => {
-      window.removeEventListener("scroll", updateFloatingUi);
+      scrollTarget.removeEventListener("scroll", updateFloatingUi);
       window.removeEventListener("resize", updateFloatingUi);
     };
   }, [selId]);
@@ -914,6 +973,7 @@ function BirdsScreen({
   }, [birds, feedTypeById, feedTypes, penFeedLogs, selId]);
   const feed30MaxKg = useMemo(() => feed30.days.reduce((best, day) => Math.max(best, day.totalKg || 0), 0), [feed30.days]);
   const selPhotos = useMemo(() => selId ? photoCache[selId] || [] : [], [photoCache, selId]);
+  const latestSelPhoto = useMemo(() => latestPhotoWithImage(selPhotos), [selPhotos]);
   const infoSuggestion = useMemo(() => sel && infoForm ? stageSuggestion({
     ...sel,
     ...infoForm,
@@ -1553,6 +1613,7 @@ function BirdsScreen({
     if (nx < 0 || nx >= navVisible.length) return;
     selectBird(navVisible[nx]);
     resetBirdForms();
+    scrollPageTop();
   }
   function handleSwipeStart(e) {
     const t = e.target;
@@ -1646,6 +1707,8 @@ function BirdsScreen({
     const canApplyInfoSuggestion = !!(infoSuggestion && infoForm && infoSuggestion.stage !== infoForm.stage);
     const showFloatingInfoSave = tab === "info" && infoDirty;
     const floatingInfoSaveBottom = showFloatingSummary ? 164 : 84;
+    const recentPhotoFloatingTop = 16;
+    const showRecentPhotoDock = !!latestSelPhoto;
     return React.createElement("div", {
       style: C.body
     }, React.createElement("div", {
@@ -2792,7 +2855,119 @@ function BirdsScreen({
       },
       onClick: saveBirdInfo,
       disabled: !!infoTagConflict
-    }, infoTagConflict ? "Fix Tag ID to Save" : "Save Details")), showFloatingNav && hasPrev && React.createElement("button", {
+    }, infoTagConflict ? "Fix Tag ID to Save" : "Save Details")), showRecentPhotoDock && recentPhotoCollapsed && React.createElement("button", {
+      type: "button",
+      onClick: () => setRecentPhotoCollapsed(false),
+      title: "Show latest photo",
+      "aria-label": "Show latest photo",
+      style: {
+        ...C.sec,
+        position: "fixed",
+        top: recentPhotoFloatingTop,
+        right: 12,
+        width: 48,
+        minHeight: 0,
+        padding: "10px 8px",
+        borderRadius: 18,
+        background: "#fffffff2",
+        backdropFilter: "blur(10px)",
+        boxShadow: "0 12px 30px #00000020",
+        zIndex: 84,
+        display: "grid",
+        gap: 4,
+        justifyItems: "center"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 18,
+        lineHeight: 1
+      }
+    }, "\uD83D\uDCF8"), React.createElement("div", {
+      style: {
+        fontSize: 12,
+        lineHeight: 1,
+        fontWeight: 900,
+        color: "#475569"
+      }
+    }, "\u2039")), showRecentPhotoDock && !recentPhotoCollapsed && React.createElement("div", {
+      style: {
+        position: "fixed",
+        top: recentPhotoFloatingTop,
+        right: 12,
+        width: 126,
+        borderRadius: 20,
+        background: "#fffffff2",
+        backdropFilter: "blur(12px)",
+        border: "1px solid #d9e3ef",
+        boxShadow: "0 16px 36px #00000022",
+        padding: 8,
+        zIndex: 84
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        marginBottom: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "#64748b",
+        fontWeight: 800,
+        textTransform: "uppercase",
+        letterSpacing: ".06em"
+      }
+    }, "Latest photo"), React.createElement("button", {
+      type: "button",
+      onClick: () => setRecentPhotoCollapsed(true),
+      title: "Collapse latest photo",
+      "aria-label": "Collapse latest photo",
+      style: {
+        border: "1px solid #d9e3ef",
+        background: "#ffffff",
+        color: "#475569",
+        width: 28,
+        height: 28,
+        borderRadius: 999,
+        padding: 0,
+        display: "grid",
+        placeItems: "center",
+        cursor: "pointer"
+      }
+    }, "\u203A")), React.createElement("button", {
+      type: "button",
+      onClick: () => openPhotoPreview(latestSelPhoto, `${birdDisplayName(sel)} latest photo`),
+      title: "Open latest photo",
+      "aria-label": "Open latest photo",
+      style: {
+        display: "block",
+        width: "100%",
+        padding: 0,
+        border: "none",
+        background: "transparent",
+        cursor: "zoom-in"
+      }
+    }, React.createElement("img", {
+      src: latestSelPhoto.dataUrl,
+      alt: `${birdDisplayName(sel)} latest photo`,
+      style: {
+        width: "100%",
+        aspectRatio: "1 / 1",
+        objectFit: "cover",
+        borderRadius: 16,
+        display: "block",
+        boxShadow: "0 8px 24px #0f172a1c"
+      }
+    })), React.createElement("div", {
+      style: {
+        marginTop: 8,
+        fontSize: 11,
+        color: "#475569",
+        lineHeight: 1.35
+      }
+    }, latestSelPhoto.takenAt ? fmtDateTime(latestSelPhoto.takenAt) : "Tap to enlarge")), showFloatingNav && hasPrev && React.createElement("button", {
       onClick: () => stepSel(-1),
       style: {
         ...C.sec,
@@ -3027,10 +3202,7 @@ function BirdsScreen({
       alt: "",
       onClick: event => {
         event.stopPropagation();
-        setListPhotoPreview({
-          dataUrl: thumb.dataUrl,
-          label: birdDisplayName(b)
-        });
+        openPhotoPreview(thumb, birdDisplayName(b));
       },
       style: {
         width: 52,
@@ -3271,10 +3443,7 @@ function BirdsScreen({
       }
     }, thumb && React.createElement("button", {
       type: "button",
-      onClick: () => setListPhotoPreview({
-        dataUrl: thumb.dataUrl,
-        label: birdName
-      }),
+      onClick: () => openPhotoPreview(thumb, birdName),
       title: `Open latest photo for ${birdName}`,
       "aria-label": `Open latest photo for ${birdName}`,
       style: {
@@ -3808,7 +3977,24 @@ function BirdsScreen({
       borderRadius: 10,
       cursor: "zoom-out"
     }
-  }), React.createElement("div", {
+  }), !!(listPhotoPreview.label || listPhotoPreview.detail) && React.createElement("div", {
+    style: {
+      textAlign: "center",
+      color: "#f8fafc"
+    }
+  }, !!listPhotoPreview.label && React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 800
+    }
+  }, listPhotoPreview.label), !!listPhotoPreview.detail && React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 12,
+      color: "#cbd5e1",
+      fontWeight: 700
+    }
+  }, listPhotoPreview.detail)), React.createElement("div", {
     style: {
       color: "#e2e8f0",
       fontSize: 13,
