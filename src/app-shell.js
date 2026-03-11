@@ -3,6 +3,7 @@ const {
   normalizeBackupPayload,
   completeReminderAndScheduleNext,
   buildAutomaticHatchReminders,
+  buildAutomaticIncubationReminders,
   financeCategoryLabel
 } = globalThis.FlockTrackLogic;
 const dataApi = globalThis.FlockTrackData || {};
@@ -1073,31 +1074,36 @@ function App() {
   const birdById = useMemo(() => new Map(birds.map(bird => [bird.id, bird])), [birds]);
   const hideableTabs = useMemo(() => HIDEABLE_TAB_ORDER.map(id => TABS.find(tabDef => tabDef.id === id)).filter(Boolean), []);
   const visibleNavTabs = useMemo(() => TABS.filter(tabDef => !HIDEABLE_TAB_IDS.has(tabDef.id) || tabVisibility[tabDef.id] !== false), [tabVisibility]);
+  const autoIncubationReminders = useMemo(() => buildAutomaticIncubationReminders({
+    batches,
+    eggStates
+  }), [batches, eggStates]);
   const autoHatchReminders = useMemo(() => buildAutomaticHatchReminders({
     batches,
     eggStates
   }), [batches, eggStates]);
-  const allReminders = useMemo(() => [...instances, ...autoHatchReminders], [instances, autoHatchReminders]);
+  const allReminders = useMemo(() => [...instances, ...autoIncubationReminders, ...autoHatchReminders], [autoHatchReminders, autoIncubationReminders, instances]);
   const calendarEventsByDay = useMemo(() => {
     const map = new Map();
     allReminders.forEach((reminder, idx) => {
       if (reminder?.status && reminder.status !== "pending") return;
-      const isAutoHatch = reminder.source === "auto_hatch";
-      const eventDate = isAutoHatch ? reminder.expectedHatchDate || reminder.dueAt : reminder.dueAt;
+      const isAutoBatchReminder = reminder.source === "auto_hatch" || reminder.source === "auto_incubation";
+      const eventDate = isAutoBatchReminder ? reminder.source === "auto_hatch" ? reminder.expectedHatchDate || reminder.dueAt : reminder.dueAt : reminder.dueAt;
       const dayKey = calendarDayKey(eventDate);
       if (!dayKey) return;
       const dueMsRaw = new Date(eventDate || 0).getTime();
       const dueMs = Number.isFinite(dueMsRaw) ? dueMsRaw : 0;
       const birdTag = reminder.birdId ? birdById.get(reminder.birdId)?.tagId || "" : "";
-      const title = isAutoHatch ? `${reminder.batchCode || "Batch"} hatch due` : `${humanize(reminder.kind || "task")} due`;
-      const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs` : [birdTag, `Due ${fmtDate(eventDate)}`].filter(Boolean).join(" · ");
+      const title = isAutoBatchReminder ? `${reminder.batchCode || "Batch"} — ${reminder.title || humanize(reminder.kind || "task")}` : `${humanize(reminder.kind || "task")} due`;
+      const detail = isAutoBatchReminder ? reminder.note || `${fmtNum(reminder.pendingEggCount)} pending eggs` : [birdTag, `Due ${fmtDate(eventDate)}`].filter(Boolean).join(" · ");
       const event = {
-        id: reminder.id ? String(reminder.id) : `${isAutoHatch ? "hatch" : "reminder"}-${idx}-${dayKey}`,
+        id: reminder.id ? String(reminder.id) : `${isAutoBatchReminder ? "batch-reminder" : "reminder"}-${idx}-${dayKey}`,
         title,
         detail,
-        tone: isAutoHatch ? "#b45309" : "#1d4ed8",
-        kind: isAutoHatch ? "Hatch" : "Reminder",
-        target: isAutoHatch ? "hatchery" : "tasks",
+        tone: reminder.source === "auto_hatch" ? "#b45309" : reminder.source === "auto_incubation" ? "#0f766e" : "#1d4ed8",
+        kind: isAutoBatchReminder ? "Hatchery" : "Reminder",
+        target: isAutoBatchReminder ? "hatchery" : "tasks",
+        batchId: reminder.batchId || "",
         dueMs
       };
       const existing = map.get(dayKey) || [];
@@ -2194,7 +2200,7 @@ function App() {
   function openCalendarEvent(eventItem) {
     if (!eventItem) return;
     if (eventItem.target === "hatchery") {
-      setTab("hatchery");
+      if (eventItem.batchId) openBatchRecord(eventItem.batchId);else setTab("hatchery");
     } else {
       openSettingsTab("tasks");
     }
@@ -2468,6 +2474,7 @@ function App() {
     onAddRule: addRule,
     onComplete: handleInst,
     onDeleteRule: delRule,
+    onOpenBatch: openBatchRecord,
     storageInfo: storageInfo,
     retentionInfo: retentionInfo,
     onLoadStorage: loadStoragePanel,

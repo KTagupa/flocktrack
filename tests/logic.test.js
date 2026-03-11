@@ -1,15 +1,19 @@
 const assert = require("node:assert/strict");
 const {
   STATUS_DATE_FIELDS,
+  INCUBATION_SCHEDULE,
   nextCode,
   eggCode,
   outsiderTagCode,
   parseOutsiderTagCode,
   normalizeTagId,
+  resolveBatchIncubationDates,
   getBirdPenAtDate,
   buildBirdPenUpdate,
   estimatePenFeedLog,
+  buildBatchIncubationProfile,
   buildAutomaticHatchReminders,
+  buildAutomaticIncubationReminders,
   stageSuggestion,
   retentionDaysForStatus,
   buildRetentionSnapshot,
@@ -69,6 +73,29 @@ function run() {
   assert.equal(retentionDaysForStatus("culled"), 30);
   assert.equal(retentionDaysForStatus("active"), null);
   assert.equal(STATUS_DATE_FIELDS.sold, "soldDate");
+  assert.equal(INCUBATION_SCHEDULE.length, 4);
+
+  const incubationDates = resolveBatchIncubationDates({
+    collectedDate: "2026-03-01",
+    incubationStartDate: "2026-03-03"
+  });
+  assert.equal(incubationDates.incubationStartDate, "2026-03-03");
+  assert.equal(incubationDates.expectedHatchDate, "2026-03-24");
+
+  const incubationProfile = buildBatchIncubationProfile({
+    id: "batch-1",
+    code: "B001",
+    collectedDate: "2026-03-01",
+    incubationStartDate: "2026-03-03"
+  }, {
+    nowMs: new Date("2026-03-16T05:00:00.000Z").getTime()
+  });
+  assert.equal(incubationProfile.dayNumber, 14);
+  assert.equal(incubationProfile.currentStage.id, "organ_development");
+  assert.equal(incubationProfile.currentStage.humidity, "45-50% RH");
+  assert.equal(incubationProfile.nextCheckpointTitle, "Day 15 humidity adjustment");
+  assert.equal(incubationProfile.nextCheckpointDay, "2026-03-17");
+  assert.equal(incubationProfile.expectedHatchDate, "2026-03-24");
 
   const snapshot = buildRetentionSnapshot({
     nowMs: new Date("2026-03-06T00:00:00.000Z").getTime(),
@@ -259,6 +286,7 @@ function run() {
       id: "batch-1",
       code: "B001",
       collectedDate: "2026-03-01",
+      incubationStartDate: "2026-03-03",
       eggCount: 12
     }, {
       id: "batch-2",
@@ -304,9 +332,56 @@ function run() {
   assert.equal(hatchReminders[0].id, "auto-hatch-batch-1");
   assert.equal(hatchReminders[0].batchCode, "B001");
   assert.equal(hatchReminders[0].pendingEggCount, 10);
-  assert.equal(hatchReminders[0].expectedHatchDate, "2026-03-22");
-  assert.equal(hatchReminders[0].dueAt, "2026-03-22T12:00:00.000Z");
+  assert.equal(hatchReminders[0].expectedHatchDate, "2026-03-24");
+  assert.equal(hatchReminders[0].dueAt, "2026-03-24T12:00:00.000Z");
+  assert.equal(hatchReminders[0].title, "Hatch due");
   assert.equal(hatchReminders[0].auto, true);
+
+  const incubationReminders = buildAutomaticIncubationReminders({
+    batches: [{
+      id: "batch-1",
+      code: "B001",
+      collectedDate: "2026-03-01",
+      eggCount: 12
+    }, {
+      id: "batch-2",
+      code: "B002",
+      collectedDate: "2026-03-02",
+      eggCount: 6
+    }],
+    eggStates: [{
+      id: "egg-1",
+      batchId: "batch-2",
+      status: "hatched"
+    }, {
+      id: "egg-2",
+      batchId: "batch-2",
+      status: "hatched"
+    }, {
+      id: "egg-3",
+      batchId: "batch-2",
+      status: "hatched"
+    }, {
+      id: "egg-4",
+      batchId: "batch-2",
+      status: "hatched"
+    }, {
+      id: "egg-5",
+      batchId: "batch-2",
+      status: "hatched"
+    }, {
+      id: "egg-6",
+      batchId: "batch-2",
+      status: "hatched"
+    }],
+    nowMs: new Date("2026-03-01T06:00:00.000Z").getTime()
+  });
+  assert.equal(incubationReminders.length, 4);
+  assert.equal(incubationReminders[0].id, "auto-incubation-batch-1-early_embryo");
+  assert.equal(incubationReminders[0].title, "Start incubation");
+  assert.equal(incubationReminders[0].humidity, "45-50% RH");
+  assert.equal(incubationReminders[3].id, "auto-incubation-batch-1-lockdown");
+  assert.equal(incubationReminders[3].dueAt, "2026-03-18T12:00:00.000Z");
 
   const penUpdatedBird = buildBirdPenUpdate({
     bird: {

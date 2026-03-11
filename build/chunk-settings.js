@@ -10,6 +10,7 @@ function Reminders({
   onAddRule,
   onComplete,
   onDeleteRule,
+  onOpenBatch,
   embedded = false
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -56,13 +57,19 @@ function Reminders({
     const batch = r.batchId ? batchById.get(r.batchId) : null;
     const od = r.status === "pending" && new Date(r.dueAt) < now;
     const isAutoHatch = r.source === "auto_hatch";
-    const titleLabel = isAutoHatch ? `${r.batchCode || batch?.code || "Batch"} — Hatch due` : `${bird?.tagId || "?"} — ${r.kind}`;
-    const detailLabel = isAutoHatch ? `${fmtNum(r.pendingEggCount)} pending eggs · expected hatch ${fmtDate(r.expectedHatchDate || r.dueAt)}` : `${od ? "⚠️ Overdue · " : ""}${fmtDate(r.dueAt)}`;
+    const isAutoIncubation = r.source === "auto_incubation";
+    const titleLabel = isAutoHatch || isAutoIncubation ? `${r.batchCode || batch?.code || "Batch"} — ${r.title || humanize(r.kind)}` : `${bird?.tagId || "?"} — ${r.kind}`;
+    const detailLabel = isAutoHatch ? `${fmtNum(r.pendingEggCount)} pending eggs · expected hatch ${fmtDate(r.expectedHatchDate || r.dueAt)}` : isAutoIncubation ? `${r.dayRangeLabel || "Incubation"} · ${r.humidity || ""} · ${fmtNum(r.pendingEggCount)} pending eggs` : `${od ? "⚠️ Overdue · " : ""}${fmtDate(r.dueAt)}`;
     return React.createElement("div", {
       style: {
         ...C.card,
         borderColor: od ? "#dc262644" : r.status === "done" ? "#15803d22" : "#d9e3ef",
-        marginBottom: 10
+        marginBottom: 10,
+        cursor: isAutoHatch || isAutoIncubation ? "pointer" : "default"
+      }
+    ,
+      onClick: () => {
+        if ((isAutoHatch || isAutoIncubation) && typeof onOpenBatch === "function") onOpenBatch(r.batchId);
       }
     }, React.createElement("div", {
       style: {
@@ -92,7 +99,7 @@ function Reminders({
     }, "\u2713 Done"), r.status === "done" && React.createElement("span", {
       style: C.badge("#15803d")
     }, "\u2713"), r.auto && React.createElement("span", {
-      style: C.badge("#b45309")
+      style: C.badge(isAutoIncubation ? "#0f766e" : "#b45309")
     }, "Auto")));
   }
   return React.createElement("div", embedded ? null : {
@@ -805,6 +812,7 @@ function SettingsTab({
   onAddRule,
   onComplete,
   onDeleteRule,
+  onOpenBatch,
   storageInfo,
   retentionInfo,
   onLoadStorage,
@@ -1769,6 +1777,7 @@ function SettingsTab({
     onAddRule: onAddRule,
     onComplete: onComplete,
     onDeleteRule: onDeleteRule,
+    onOpenBatch: onOpenBatch,
     embedded: true
   }), sectionView === "reports" && React.createElement(ExportTab, {
     birds: birds || [],

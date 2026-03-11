@@ -1,5 +1,5 @@
 // Generated from sw.source.js. Edit source, then run npm run build.
-const CACHE_NAME = "flocktrack-app-shell-bca3e2b94e73";
+const CACHE_NAME = "flocktrack-app-shell-df428322425e";
 const APP_SHELL_URLS = [
   "index.html",
   "manifest.webmanifest",

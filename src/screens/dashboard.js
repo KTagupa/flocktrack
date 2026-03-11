@@ -149,6 +149,7 @@ function Dashboard({
   ensureBirdPhotos
 }) {
   const HATCH_ALERT_WINDOW_DAYS = globalThis.FlockTrackLogic?.HATCH_ALERT_WINDOW_DAYS || 2;
+  const INCUBATION_REMINDER_WINDOW_DAYS = globalThis.FlockTrackLogic?.INCUBATION_REMINDER_WINDOW_DAYS || 1;
   const now = new Date();
   const nowMs = now.getTime();
   const todayDay = today();
@@ -231,9 +232,10 @@ function Dashboard({
     if (!Number.isFinite(dueMs)) return false;
     if (dueMs < nowMs) return true;
     if (new Date(reminder.dueAt).toDateString() === now.toDateString()) return true;
-    if (reminder.source !== "auto_hatch") return false;
     const daysUntil = Math.floor((dueMs - todayStartMs) / DAY_MS);
-    return daysUntil <= HATCH_ALERT_WINDOW_DAYS;
+    if (reminder.source === "auto_hatch") return daysUntil <= HATCH_ALERT_WINDOW_DAYS;
+    if (reminder.source === "auto_incubation") return daysUntil <= INCUBATION_REMINDER_WINDOW_DAYS;
+    return false;
   }).sort((a, b) => {
     const aDue = new Date(a.dueAt).getTime();
     const bDue = new Date(b.dueAt).getTime();
@@ -970,14 +972,14 @@ function Dashboard({
     const isOverdue = dueMs < nowMs;
     const isToday = new Date(reminder.dueAt).toDateString() === now.toDateString();
     const isAutoHatch = reminder.source === "auto_hatch";
+    const isAutoIncubation = reminder.source === "auto_incubation";
     const bird = reminder.birdId ? birds.find(item => item.id === reminder.birdId) : null;
     const batch = reminder.batchId ? batchById.get(reminder.batchId) : null;
-    const targetLabel = isAutoHatch ? reminder.batchCode || batch?.code || "Batch" : bird?.tagId || "?";
+    const targetLabel = isAutoHatch || isAutoIncubation ? reminder.batchCode || batch?.code || "Batch" : bird?.tagId || "?";
     const daysUntil = Math.floor((dueMs - todayStartMs) / DAY_MS);
-    const tone = isOverdue ? "#b91c1c" : isAutoHatch ? "#b45309" : "#1d4ed8";
-    const badgeText = isOverdue ? "Overdue" : isToday ? "Due today" : isAutoHatch ? daysUntil <= 0 ? "Hatching today" : `Hatching in ${daysUntil}d` : "Urgent";
-    const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs · expected hatch ${fmtDate(reminder.expectedHatchDate || reminder.dueAt)}` : `${humanize(reminder.kind)} · due ${fmtDate(reminder.dueAt)}`;
-    const section = isAutoHatch ? "batches" : "tasks";
+    const tone = isOverdue ? "#b91c1c" : isAutoHatch ? "#b45309" : isAutoIncubation ? "#0f766e" : "#1d4ed8";
+    const badgeText = isOverdue ? "Overdue" : isToday ? "Due today" : isAutoHatch ? daysUntil <= 0 ? "Hatching today" : `Hatching in ${daysUntil}d` : isAutoIncubation ? daysUntil <= 0 ? "Checkpoint today" : `Checkpoint in ${daysUntil}d` : "Urgent";
+    const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs · expected hatch ${fmtDate(reminder.expectedHatchDate || reminder.dueAt)}` : isAutoIncubation ? `${reminder.dayRangeLabel || "Incubation"} · ${reminder.humidity || ""} · ${fmtNum(reminder.pendingEggCount)} pending eggs` : `${humanize(reminder.kind)} · due ${fmtDate(reminder.dueAt)}`;
     return React.createElement("button", {
       key: reminder.id,
       style: {
@@ -993,14 +995,14 @@ function Dashboard({
         cursor: "pointer",
         marginBottom: 10
       },
-      onClick: () => onOpenSection && onOpenSection(section)
+      onClick: () => isAutoHatch || isAutoIncubation ? onOpenBatch && onOpenBatch(reminder.batchId) : onOpenSection && onOpenSection("tasks")
     }, React.createElement("div", null, React.createElement("div", {
       style: {
         fontSize: 16,
         fontWeight: 800,
         color: tone
       }
-    }, targetLabel, " — ", isAutoHatch ? "Hatch due" : humanize(reminder.kind)), React.createElement("div", {
+    }, targetLabel, " — ", isAutoHatch || isAutoIncubation ? reminder.title || humanize(reminder.kind) : humanize(reminder.kind)), React.createElement("div", {
       style: {
         marginTop: 4,
         color: "#475569",

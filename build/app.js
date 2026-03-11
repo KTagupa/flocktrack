@@ -120,6 +120,44 @@ const {
   }];
   const HATCH_INCUBATION_DAYS = 21;
   const HATCH_ALERT_WINDOW_DAYS = 2;
+  const INCUBATION_REMINDER_WINDOW_DAYS = 1;
+  const INCUBATION_SCHEDULE = [{
+    id: "early_embryo",
+    startDay: 1,
+    endDay: 7,
+    label: "Early embryo development",
+    shortLabel: "Early embryo",
+    humidity: "45-50% RH",
+    purpose: "Allows gradual water loss from the egg and proper air cell formation.",
+    action: "Keep humidity steady while the embryo begins forming."
+  }, {
+    id: "organ_development",
+    startDay: 8,
+    endDay: 14,
+    label: "Organ development",
+    shortLabel: "Organ development",
+    humidity: "45-50% RH",
+    purpose: "Maintains steady evaporation and embryo growth.",
+    action: "Keep humidity steady and verify normal incubator conditions."
+  }, {
+    id: "late_development",
+    startDay: 15,
+    endDay: 17,
+    label: "Late development",
+    shortLabel: "Late development",
+    humidity: "50-55% RH",
+    purpose: "Slightly higher humidity helps prevent membranes drying as chicks grow.",
+    action: "Raise humidity slightly as the chicks enter late development."
+  }, {
+    id: "lockdown",
+    startDay: 18,
+    endDay: 21,
+    label: "Hatching stage (lockdown)",
+    shortLabel: "Lockdown",
+    humidity: "65-75% RH",
+    purpose: "Higher humidity softens the shell and membranes for pipping and hatch.",
+    action: "Increase humidity and stop turning eggs for lockdown."
+  }];
   const STATUS_DATE_FIELDS = {
     sold: "soldDate",
     deceased: "deceasedDate",
@@ -165,6 +203,84 @@ const {
   const dayToNoonIso = dayValue => {
     const day = normalizeDay(dayValue);
     return day ? new Date(`${day}T12:00:00.000Z`).toISOString() : "";
+  };
+  const incubationCheckpointTitle = stage => {
+    if (!stage) return "Incubation checkpoint";
+    if (stage.startDay === 1) return "Start incubation";
+    if (stage.startDay === 8) return "Day 8 stage check";
+    if (stage.startDay === 15) return "Day 15 humidity adjustment";
+    if (stage.startDay === 18) return "Day 18 lockdown";
+    return `${stage.label} checkpoint`;
+  };
+  const buildBatchEggStateCounts = eggStates => {
+    const stateCounts = new Map();
+    (Array.isArray(eggStates) ? eggStates : []).forEach(state => {
+      if (!state?.batchId) return;
+      const current = stateCounts.get(state.batchId) || {
+        hatched: 0,
+        failed: 0
+      };
+      if (state.status === "hatched") current.hatched += 1;
+      if (state.status === "failed") current.failed += 1;
+      stateCounts.set(state.batchId, current);
+    });
+    return stateCounts;
+  };
+  const batchPendingEggCount = (batch, stateCounts) => {
+    const counts = stateCounts?.get(batch?.id) || {
+      hatched: 0,
+      failed: 0
+    };
+    const eggCount = Math.max(0, Number(batch?.eggCount) || 0);
+    return Math.max(0, eggCount - counts.hatched - counts.failed);
+  };
+  const resolveBatchIncubationDates = batch => {
+    const incubationStartDate = normalizeDay(batch?.incubationStartDate || batch?.setDate || batch?.collectedDate);
+    const expectedHatchDate = normalizeDay(batch?.expectedHatchDate || batch?.hatchDate) || addDaysToDay(incubationStartDate, HATCH_INCUBATION_DAYS);
+    return {
+      incubationStartDate,
+      expectedHatchDate
+    };
+  };
+  const incubationStageForDay = dayNumber => {
+    const day = Math.max(1, Number(dayNumber) || 1);
+    return INCUBATION_SCHEDULE.find(stage => day >= stage.startDay && day <= stage.endDay) || INCUBATION_SCHEDULE[INCUBATION_SCHEDULE.length - 1] || null;
+  };
+  const buildBatchIncubationProfile = (batch, options = {}) => {
+    const {
+      incubationStartDate,
+      expectedHatchDate
+    } = resolveBatchIncubationDates(batch);
+    if (!incubationStartDate) return null;
+    const nowMs = Number.isFinite(options?.nowMs) ? options.nowMs : Date.now();
+    const todayDay = normalizeDay(nowMs);
+    const startMs = new Date(`${incubationStartDate}T00:00:00.000Z`).getTime();
+    const todayStartMs = todayDay ? new Date(`${todayDay}T00:00:00.000Z`).getTime() : nowMs;
+    const expectedStartMs = expectedHatchDate ? new Date(`${expectedHatchDate}T00:00:00.000Z`).getTime() : NaN;
+    const isScheduled = Number.isFinite(startMs) && Number.isFinite(todayStartMs) ? todayStartMs < startMs : false;
+    const rawDayNumber = Number.isFinite(startMs) && Number.isFinite(todayStartMs) ? Math.floor((todayStartMs - startMs) / DAY_MS) + 1 : 1;
+    const dayNumber = Math.max(1, Math.min(HATCH_INCUBATION_DAYS, rawDayNumber || 1));
+    const currentStage = incubationStageForDay(dayNumber);
+    const nextStage = INCUBATION_SCHEDULE.find(stage => stage.startDay > dayNumber) || null;
+    const nextCheckpointDay = nextStage ? addDaysToDay(incubationStartDate, nextStage.startDay - 1) : expectedHatchDate;
+    const daysUntilStart = Number.isFinite(startMs) && Number.isFinite(todayStartMs) ? Math.ceil((startMs - todayStartMs) / DAY_MS) : null;
+    const daysUntilHatch = Number.isFinite(expectedStartMs) && Number.isFinite(todayStartMs) ? Math.ceil((expectedStartMs - todayStartMs) / DAY_MS) : null;
+    return {
+      batchId: String(batch?.id || ""),
+      batchCode: String(batch?.code || ""),
+      incubationStartDate,
+      expectedHatchDate,
+      dayNumber,
+      totalDays: HATCH_INCUBATION_DAYS,
+      currentStage,
+      nextStage,
+      nextCheckpointDay,
+      nextCheckpointTitle: nextStage ? incubationCheckpointTitle(nextStage) : "Hatch due",
+      isScheduled,
+      daysUntilStart,
+      daysUntilHatch,
+      schedule: INCUBATION_SCHEDULE
+    };
   };
   const financeAmountValue = value => {
     const amount = Number(value);
@@ -454,26 +570,14 @@ const {
     batches = [],
     eggStates = []
   } = {}) => {
-    const stateCounts = new Map();
-    eggStates.forEach(state => {
-      if (!state?.batchId) return;
-      const current = stateCounts.get(state.batchId) || {
-        hatched: 0,
-        failed: 0
-      };
-      if (state.status === "hatched") current.hatched += 1;
-      if (state.status === "failed") current.failed += 1;
-      stateCounts.set(state.batchId, current);
-    });
+    const stateCounts = buildBatchEggStateCounts(eggStates);
     return batches.map(batch => {
-      const counts = stateCounts.get(batch.id) || {
-        hatched: 0,
-        failed: 0
-      };
-      const eggCount = Math.max(0, Number(batch.eggCount) || 0);
-      const pendingEggCount = Math.max(0, eggCount - counts.hatched - counts.failed);
+      const pendingEggCount = batchPendingEggCount(batch, stateCounts);
       if (!pendingEggCount) return null;
-      const expectedHatchDate = normalizeDay(batch.expectedHatchDate || batch.hatchDate) || addDaysToDay(batch.collectedDate, HATCH_INCUBATION_DAYS);
+      const {
+        incubationStartDate,
+        expectedHatchDate
+      } = resolveBatchIncubationDates(batch);
       if (!expectedHatchDate) return null;
       return {
         id: `auto-hatch-${batch.id}`,
@@ -482,12 +586,60 @@ const {
         pendingEggCount,
         kind: "hatch_due",
         dueAt: dayToNoonIso(expectedHatchDate),
+        title: "Hatch due",
+        note: `${pendingEggCount} pending eggs expected to hatch around ${expectedHatchDate}`,
+        incubationStartDate,
         expectedHatchDate,
         source: "auto_hatch",
         auto: true,
         status: "pending"
       };
     }).filter(Boolean).sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+  };
+  const buildAutomaticIncubationReminders = ({
+    batches = [],
+    eggStates = [],
+    nowMs = Date.now()
+  } = {}) => {
+    const stateCounts = buildBatchEggStateCounts(eggStates);
+    const todayDay = normalizeDay(nowMs);
+    const todayStartMs = todayDay ? new Date(`${todayDay}T00:00:00.000Z`).getTime() : nowMs;
+    return (Array.isArray(batches) ? batches : []).flatMap(batch => {
+      const pendingEggCount = batchPendingEggCount(batch, stateCounts);
+      if (!pendingEggCount) return [];
+      const profile = buildBatchIncubationProfile(batch, {
+        nowMs
+      });
+      if (!profile?.incubationStartDate) return [];
+      return INCUBATION_SCHEDULE.map(stage => {
+        const dueDay = addDaysToDay(profile.incubationStartDate, stage.startDay - 1);
+        if (!dueDay) return null;
+        const dueStartMs = new Date(`${dueDay}T00:00:00.000Z`).getTime();
+        if (!Number.isFinite(dueStartMs) || dueStartMs < todayStartMs) return null;
+        return {
+          id: `auto-incubation-${batch.id}-${stage.id}`,
+          batchId: batch.id,
+          batchCode: batch.code || "",
+          pendingEggCount,
+          kind: "incubation_checkpoint",
+          dueAt: dayToNoonIso(dueDay),
+          title: incubationCheckpointTitle(stage),
+          note: `${stage.humidity} · ${stage.shortLabel}`,
+          incubationDay: stage.startDay,
+          dayRangeLabel: `Day ${stage.startDay}-${stage.endDay}`,
+          humidity: stage.humidity,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          purpose: stage.purpose,
+          action: stage.action,
+          incubationStartDate: profile.incubationStartDate,
+          expectedHatchDate: profile.expectedHatchDate,
+          source: "auto_incubation",
+          auto: true,
+          status: "pending"
+        };
+      }).filter(Boolean);
+    }).sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
   };
   const retentionDaysForStatus = status => RETENTION_DAYS[status] || null;
   const stageSuggestion = bird => {
@@ -652,6 +804,8 @@ const {
     DAY_MS,
     HATCH_INCUBATION_DAYS,
     HATCH_ALERT_WINDOW_DAYS,
+    INCUBATION_REMINDER_WINDOW_DAYS,
+    INCUBATION_SCHEDULE,
     RETENTION_DAYS,
     FINANCE_CATEGORY_DEFS,
     FINANCE_CATEGORY_LABELS,
@@ -661,6 +815,7 @@ const {
     normalizeTagId,
     normalizeDay,
     addDaysToDay,
+    resolveBatchIncubationDates,
     normalizeFinanceMonth,
     shiftFinanceMonth,
     financeMonthTitle,
@@ -675,7 +830,9 @@ const {
     isBirdActiveOnDate,
     buildBirdPenUpdate,
     estimatePenFeedLog,
+    buildBatchIncubationProfile,
     buildAutomaticHatchReminders,
+    buildAutomaticIncubationReminders,
     stageSuggestion,
     retentionDaysForStatus,
     buildRetentionSnapshot,
@@ -850,6 +1007,8 @@ const dbDelByIndex = (s, idx, key) => withStore(s, "readwrite", (st, tx) => {
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const {
   DAY_MS,
+  INCUBATION_SCHEDULE,
+  buildBatchIncubationProfile,
   normalizeTagId,
   nextCode,
   eggCode,
@@ -2349,6 +2508,7 @@ function Dashboard({
   ensureBirdPhotos
 }) {
   const HATCH_ALERT_WINDOW_DAYS = globalThis.FlockTrackLogic?.HATCH_ALERT_WINDOW_DAYS || 2;
+  const INCUBATION_REMINDER_WINDOW_DAYS = globalThis.FlockTrackLogic?.INCUBATION_REMINDER_WINDOW_DAYS || 1;
   const now = new Date();
   const nowMs = now.getTime();
   const todayDay = today();
@@ -2431,9 +2591,10 @@ function Dashboard({
     if (!Number.isFinite(dueMs)) return false;
     if (dueMs < nowMs) return true;
     if (new Date(reminder.dueAt).toDateString() === now.toDateString()) return true;
-    if (reminder.source !== "auto_hatch") return false;
     const daysUntil = Math.floor((dueMs - todayStartMs) / DAY_MS);
-    return daysUntil <= HATCH_ALERT_WINDOW_DAYS;
+    if (reminder.source === "auto_hatch") return daysUntil <= HATCH_ALERT_WINDOW_DAYS;
+    if (reminder.source === "auto_incubation") return daysUntil <= INCUBATION_REMINDER_WINDOW_DAYS;
+    return false;
   }).sort((a, b) => {
     const aDue = new Date(a.dueAt).getTime();
     const bDue = new Date(b.dueAt).getTime();
@@ -3170,14 +3331,14 @@ function Dashboard({
     const isOverdue = dueMs < nowMs;
     const isToday = new Date(reminder.dueAt).toDateString() === now.toDateString();
     const isAutoHatch = reminder.source === "auto_hatch";
+    const isAutoIncubation = reminder.source === "auto_incubation";
     const bird = reminder.birdId ? birds.find(item => item.id === reminder.birdId) : null;
     const batch = reminder.batchId ? batchById.get(reminder.batchId) : null;
-    const targetLabel = isAutoHatch ? reminder.batchCode || batch?.code || "Batch" : bird?.tagId || "?";
+    const targetLabel = isAutoHatch || isAutoIncubation ? reminder.batchCode || batch?.code || "Batch" : bird?.tagId || "?";
     const daysUntil = Math.floor((dueMs - todayStartMs) / DAY_MS);
-    const tone = isOverdue ? "#b91c1c" : isAutoHatch ? "#b45309" : "#1d4ed8";
-    const badgeText = isOverdue ? "Overdue" : isToday ? "Due today" : isAutoHatch ? daysUntil <= 0 ? "Hatching today" : `Hatching in ${daysUntil}d` : "Urgent";
-    const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs · expected hatch ${fmtDate(reminder.expectedHatchDate || reminder.dueAt)}` : `${humanize(reminder.kind)} · due ${fmtDate(reminder.dueAt)}`;
-    const section = isAutoHatch ? "batches" : "tasks";
+    const tone = isOverdue ? "#b91c1c" : isAutoHatch ? "#b45309" : isAutoIncubation ? "#0f766e" : "#1d4ed8";
+    const badgeText = isOverdue ? "Overdue" : isToday ? "Due today" : isAutoHatch ? daysUntil <= 0 ? "Hatching today" : `Hatching in ${daysUntil}d` : isAutoIncubation ? daysUntil <= 0 ? "Checkpoint today" : `Checkpoint in ${daysUntil}d` : "Urgent";
+    const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs · expected hatch ${fmtDate(reminder.expectedHatchDate || reminder.dueAt)}` : isAutoIncubation ? `${reminder.dayRangeLabel || "Incubation"} · ${reminder.humidity || ""} · ${fmtNum(reminder.pendingEggCount)} pending eggs` : `${humanize(reminder.kind)} · due ${fmtDate(reminder.dueAt)}`;
     return React.createElement("button", {
       key: reminder.id,
       style: {
@@ -3193,14 +3354,14 @@ function Dashboard({
         cursor: "pointer",
         marginBottom: 10
       },
-      onClick: () => onOpenSection && onOpenSection(section)
+      onClick: () => isAutoHatch || isAutoIncubation ? onOpenBatch && onOpenBatch(reminder.batchId) : onOpenSection && onOpenSection("tasks")
     }, React.createElement("div", null, React.createElement("div", {
       style: {
         fontSize: 16,
         fontWeight: 800,
         color: tone
       }
-    }, targetLabel, " — ", isAutoHatch ? "Hatch due" : humanize(reminder.kind)), React.createElement("div", {
+    }, targetLabel, " — ", isAutoHatch || isAutoIncubation ? reminder.title || humanize(reminder.kind) : humanize(reminder.kind)), React.createElement("div", {
       style: {
         marginTop: 4,
         color: "#475569",
@@ -3950,6 +4111,7 @@ const {
   normalizeBackupPayload,
   completeReminderAndScheduleNext,
   buildAutomaticHatchReminders,
+  buildAutomaticIncubationReminders,
   financeCategoryLabel
 } = globalThis.FlockTrackLogic;
 const dataApi = globalThis.FlockTrackData || {};
@@ -5020,31 +5182,36 @@ function App() {
   const birdById = useMemo(() => new Map(birds.map(bird => [bird.id, bird])), [birds]);
   const hideableTabs = useMemo(() => HIDEABLE_TAB_ORDER.map(id => TABS.find(tabDef => tabDef.id === id)).filter(Boolean), []);
   const visibleNavTabs = useMemo(() => TABS.filter(tabDef => !HIDEABLE_TAB_IDS.has(tabDef.id) || tabVisibility[tabDef.id] !== false), [tabVisibility]);
+  const autoIncubationReminders = useMemo(() => buildAutomaticIncubationReminders({
+    batches,
+    eggStates
+  }), [batches, eggStates]);
   const autoHatchReminders = useMemo(() => buildAutomaticHatchReminders({
     batches,
     eggStates
   }), [batches, eggStates]);
-  const allReminders = useMemo(() => [...instances, ...autoHatchReminders], [instances, autoHatchReminders]);
+  const allReminders = useMemo(() => [...instances, ...autoIncubationReminders, ...autoHatchReminders], [autoHatchReminders, autoIncubationReminders, instances]);
   const calendarEventsByDay = useMemo(() => {
     const map = new Map();
     allReminders.forEach((reminder, idx) => {
       if (reminder?.status && reminder.status !== "pending") return;
-      const isAutoHatch = reminder.source === "auto_hatch";
-      const eventDate = isAutoHatch ? reminder.expectedHatchDate || reminder.dueAt : reminder.dueAt;
+      const isAutoBatchReminder = reminder.source === "auto_hatch" || reminder.source === "auto_incubation";
+      const eventDate = isAutoBatchReminder ? reminder.source === "auto_hatch" ? reminder.expectedHatchDate || reminder.dueAt : reminder.dueAt : reminder.dueAt;
       const dayKey = calendarDayKey(eventDate);
       if (!dayKey) return;
       const dueMsRaw = new Date(eventDate || 0).getTime();
       const dueMs = Number.isFinite(dueMsRaw) ? dueMsRaw : 0;
       const birdTag = reminder.birdId ? birdById.get(reminder.birdId)?.tagId || "" : "";
-      const title = isAutoHatch ? `${reminder.batchCode || "Batch"} hatch due` : `${humanize(reminder.kind || "task")} due`;
-      const detail = isAutoHatch ? `${fmtNum(reminder.pendingEggCount)} pending eggs` : [birdTag, `Due ${fmtDate(eventDate)}`].filter(Boolean).join(" · ");
+      const title = isAutoBatchReminder ? `${reminder.batchCode || "Batch"} — ${reminder.title || humanize(reminder.kind || "task")}` : `${humanize(reminder.kind || "task")} due`;
+      const detail = isAutoBatchReminder ? reminder.note || `${fmtNum(reminder.pendingEggCount)} pending eggs` : [birdTag, `Due ${fmtDate(eventDate)}`].filter(Boolean).join(" · ");
       const event = {
-        id: reminder.id ? String(reminder.id) : `${isAutoHatch ? "hatch" : "reminder"}-${idx}-${dayKey}`,
+        id: reminder.id ? String(reminder.id) : `${isAutoBatchReminder ? "batch-reminder" : "reminder"}-${idx}-${dayKey}`,
         title,
         detail,
-        tone: isAutoHatch ? "#b45309" : "#1d4ed8",
-        kind: isAutoHatch ? "Hatch" : "Reminder",
-        target: isAutoHatch ? "hatchery" : "tasks",
+        tone: reminder.source === "auto_hatch" ? "#b45309" : reminder.source === "auto_incubation" ? "#0f766e" : "#1d4ed8",
+        kind: isAutoBatchReminder ? "Hatchery" : "Reminder",
+        target: isAutoBatchReminder ? "hatchery" : "tasks",
+        batchId: reminder.batchId || "",
         dueMs
       };
       const existing = map.get(dayKey) || [];
@@ -6141,7 +6308,7 @@ function App() {
   function openCalendarEvent(eventItem) {
     if (!eventItem) return;
     if (eventItem.target === "hatchery") {
-      setTab("hatchery");
+      if (eventItem.batchId) openBatchRecord(eventItem.batchId);else setTab("hatchery");
     } else {
       openSettingsTab("tasks");
     }
@@ -6415,6 +6582,7 @@ function App() {
     onAddRule: addRule,
     onComplete: handleInst,
     onDeleteRule: delRule,
+    onOpenBatch: openBatchRecord,
     storageInfo: storageInfo,
     retentionInfo: retentionInfo,
     onLoadStorage: loadStoragePanel,

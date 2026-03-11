@@ -80,6 +80,7 @@ function SettingsTab({
   onAddRule,
   onComplete,
   onDeleteRule,
+  onOpenBatch,
   storageInfo,
   retentionInfo,
   onLoadStorage,
@@ -1044,6 +1045,7 @@ function SettingsTab({
     onAddRule: onAddRule,
     onComplete: onComplete,
     onDeleteRule: onDeleteRule,
+    onOpenBatch: onOpenBatch,
     embedded: true
   }), sectionView === "reports" && React.createElement(ExportTab, {
     birds: birds || [],
