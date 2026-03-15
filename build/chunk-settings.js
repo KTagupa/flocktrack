@@ -847,6 +847,7 @@ function SettingsTab({
   const [gistPullBusy, setGistPullBusy] = useState(false);
   const [pastePreviewBusy, setPastePreviewBusy] = useState(false);
   const [pasteImportBusy, setPasteImportBusy] = useState(false);
+  const [gistSyncEnabled, setGistSyncEnabled] = useState(gistSyncConfig?.syncEnabled !== false);
   const [gistToken, setGistToken] = useState(gistSyncConfig?.token || "");
   const [gistId, setGistId] = useState(gistSyncConfig?.gistId || "");
   const [gistFileName, setGistFileName] = useState(gistSyncConfig?.fileName || "flocktrack-sync.json");
@@ -888,6 +889,9 @@ function SettingsTab({
     setGistId(gistSyncConfig?.gistId || "");
     setGistFileName(gistSyncConfig?.fileName || "flocktrack-sync.json");
   }, [gistSyncConfig?.fileName, gistSyncConfig?.gistId, gistSyncConfig?.token]);
+  useEffect(() => {
+    setGistSyncEnabled(gistSyncConfig?.syncEnabled !== false);
+  }, [gistSyncConfig?.syncEnabled]);
   async function doArchive(bird) {
     if (!bird || bird.archivedAt) return;
     if (!window.confirm(`Archive ${bird.tagId || "this bird"}?`)) return;
@@ -1067,6 +1071,7 @@ function SettingsTab({
     setGistSaveBusy(true);
     try {
       const saved = await onSaveGistSyncConfig({
+        syncEnabled: gistSyncEnabled,
         token: gistToken,
         gistId: gistId,
         fileName: gistFileName
@@ -1083,11 +1088,32 @@ function SettingsTab({
       setGistSaveBusy(false);
     }
   }
+  async function toggleGistSyncEnabled() {
+    if (!onSaveGistSyncConfig || gistSaveBusy || gistPushBusy || gistPullBusy) return;
+    const nextEnabled = !gistSyncEnabled;
+    setGistSaveBusy(true);
+    try {
+      const saved = await onSaveGistSyncConfig({
+        syncEnabled: nextEnabled
+      });
+      setGistSyncEnabled(saved?.syncEnabled !== false);
+    } catch (err) {
+      console.error(err);
+      window.alert("Could not update the Gist sync toggle. Please try again.");
+    } finally {
+      setGistSaveBusy(false);
+    }
+  }
   async function doPushGist() {
     if (!onPushToGist) return;
+    if (!gistSyncEnabled) {
+      window.alert("Gist sync is turned off on this device.");
+      return;
+    }
     setGistPushBusy(true);
     try {
       const info = await onPushToGist({
+        syncEnabled: gistSyncEnabled,
         token: gistToken,
         gistId: gistId,
         fileName: gistFileName
@@ -1105,9 +1131,14 @@ function SettingsTab({
   }
   async function doPullGist() {
     if (!onPullFromGist) return;
+    if (!gistSyncEnabled) {
+      window.alert("Gist sync is turned off on this device.");
+      return;
+    }
     setGistPullBusy(true);
     try {
       const info = await onPullFromGist({
+        syncEnabled: gistSyncEnabled,
         token: gistToken,
         gistId: gistId,
         fileName: gistFileName
@@ -1130,6 +1161,7 @@ function SettingsTab({
   const actionsBusy = expBusy || cleanBusy || backupBusy || restoreBusy || resetBusy || gistSaveBusy || gistPushBusy || gistPullBusy || pastePreviewBusy || pasteImportBusy;
   const pastePreviewRows = pastePreview?.storeCounts ? Object.entries(pastePreview.storeCounts).filter(([, count]) => Number(count) > 0).sort((a, b) => b[1] - a[1]) : [];
   const gistSyncStamp = gistSyncConfig?.lastSyncAt ? `${gistSyncConfig?.lastSyncDirection === "pull" ? "Last pull" : "Last push"}: ${fmtDateTime(gistSyncConfig.lastSyncAt)}` : "No Gist sync yet on this device.";
+  const gistSyncStatusLine = gistSyncEnabled ? "Sync is ON for this device." : "Sync is OFF for this device. Push and Pull are blocked.";
   const archivableList = archivable.length ? archivable.map(b => {
     const bBatchTheme = birdBatchTheme(b);
     const bBatchLabel = birdBatchChipLabel(b);
@@ -1550,7 +1582,43 @@ function SettingsTab({
       lineHeight: 1.5,
       marginBottom: 10
     }
-  }, "Push and pull full app data using a private gist. Token and gist settings are saved only on this device."), React.createElement("label", {
+  }, "Push and pull full app data using a private gist. Token and gist settings are saved only on this device."), React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12,
+      padding: "12px 14px",
+      borderRadius: 14,
+      border: `1px solid ${gistSyncEnabled ? "#bbf7d0" : "#fecaca"}`,
+      background: gistSyncEnabled ? "#f0fdf4" : "#fef2f2",
+      marginBottom: 12
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: gistSyncEnabled ? "#166534" : "#991b1b"
+    }
+  }, gistSyncEnabled ? "Gist Sync Enabled" : "Gist Sync Disabled"), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 12,
+      color: gistSyncEnabled ? "#166534" : "#991b1b",
+      lineHeight: 1.45
+    }
+  }, gistSyncEnabled ? "This device can push and pull data to your gist." : "Keep this off while testing with made-up data. Turn it back on when you want real sync.")), React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      borderColor: gistSyncEnabled ? "#86efac" : "#fca5a5",
+      color: gistSyncEnabled ? "#166534" : "#991b1b",
+      background: "#ffffff",
+      minWidth: 96
+    },
+    onClick: toggleGistSyncEnabled,
+    disabled: actionsBusy
+  }, gistSaveBusy ? "Saving..." : gistSyncEnabled ? "Turn Off" : "Turn On")), React.createElement("label", {
     style: {
       display: "block",
       color: "#334155",
@@ -1629,7 +1697,7 @@ function SettingsTab({
       padding: "13px 10px"
     },
     onClick: doPushGist,
-    disabled: actionsBusy
+    disabled: actionsBusy || !gistSyncEnabled
   }, gistPushBusy ? "Pushing..." : "Push"), React.createElement("button", {
     style: {
       ...C.btn,
@@ -1637,7 +1705,7 @@ function SettingsTab({
       padding: "13px 10px"
     },
     onClick: doPullGist,
-    disabled: actionsBusy
+    disabled: actionsBusy || !gistSyncEnabled
   }, gistPullBusy ? "Pulling..." : "Pull")), React.createElement("div", {
     style: {
       color: "#475569",
@@ -1646,7 +1714,7 @@ function SettingsTab({
       lineHeight: 1.4,
       whiteSpace: "pre-line"
     }
-  }, gistSyncStamp, gistSyncConfig?.gistId ? `\nGist: ${gistSyncConfig.gistId}` : "")));
+  }, gistSyncStatusLine, `\n${gistSyncStamp}`, gistSyncConfig?.gistId ? `\nGist: ${gistSyncConfig.gistId}` : "")));
   const sectionDescription = sectionView === "general" ? "Organize archive, storage, backup, and sync settings." : sectionView === "tasks" ? "Manage reminder rules and complete pending tasks." : "Download raw data, summary CSVs, and printable reports.";
   return React.createElement("div", {
     style: C.body

@@ -20,7 +20,7 @@ const bundleConfigs = [{
   files: ["src/core/runtime.js", "src/core/logic.shared.js", "src/core/db.js", "src/core/data-layer.js", "src/core/ui-core.js", "src/components/primitives.js", "src/components/bird-ui.js", "src/screens/dashboard.js", "src/core/pwa.js", "src/app-shell.js"]
 }, {
   ref: "build/chunk-hatchery.js",
-  files: ["src/screens/batches.js"]
+  files: ["src/screens/batches.js", "src/screens/workspaces.js"]
 }, {
   ref: "build/chunk-pens.js",
   files: ["src/screens/pens.js"]

@@ -4161,6 +4161,10 @@ const TABS = [{
   lbl: "Overview",
   ic: "🏠"
 }, {
+  id: "workspace",
+  lbl: "Workspace",
+  ic: "🧰"
+}, {
   id: "hatchery",
   lbl: "Hatchery",
   ic: "🥚"
@@ -4191,9 +4195,14 @@ const TABS = [{
   lbl: "Settings",
   ic: "⚙️"
 }];
-const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "stats", "finance"];
+const HIDEABLE_TAB_ORDER = ["search", "flock", "pens", "hatchery", "workspace", "stats", "finance"];
 const HIDEABLE_TAB_IDS = new Set(HIDEABLE_TAB_ORDER);
 const LAZY_SCREEN_DEFS = {
+  workspace: {
+    component: "WorkspacesTab",
+    src: "build/chunk-hatchery.js",
+    title: "Workspace"
+  },
   hatchery: {
     component: "Batches",
     src: "build/chunk-hatchery.js",
@@ -4232,6 +4241,7 @@ const GIST_SYNC_STORAGE_KEY = "flocktrack-gist-sync-v1";
 const GIST_DEVICE_ID_STORAGE_KEY = "flocktrack-gist-device-id-v1";
 const GIST_DEFAULT_FILE_NAME = "flocktrack-sync.json";
 const GIST_DEFAULT_SYNC_CONFIG = {
+  syncEnabled: true,
   token: "",
   gistId: "",
   fileName: GIST_DEFAULT_FILE_NAME,
@@ -4625,6 +4635,7 @@ const resolveStoreConflictRow = (storeName, localRow, remoteRow, preferSide) => 
 const sanitizeGistSyncConfig = raw => {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
+    syncEnabled: source.syncEnabled !== false,
     token: String(source.token || "").trim(),
     gistId: String(source.gistId || "").trim(),
     fileName: String(source.fileName || GIST_DEFAULT_FILE_NAME).trim() || GIST_DEFAULT_FILE_NAME,
@@ -5183,6 +5194,7 @@ function App() {
   const [deleteUndo, setDeleteUndo] = useState(null);
   const [pendingBatchOpenId, setPendingBatchOpenId] = useState("");
   const [pendingPenOpenId, setPendingPenOpenId] = useState("");
+  const [pendingWorkspaceLaunch, setPendingWorkspaceLaunch] = useState(null);
   const [recordOverlay, setRecordOverlay] = useState(null);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => calendarMonthStart(new Date()));
@@ -5446,6 +5458,7 @@ function App() {
   }, [activeNeedsDeferredData, deferredLoaded, loadDeferredData, loaded]);
   useEffect(() => {
     const neededScreens = [];
+    if (tab === "workspace") neededScreens.push("workspace");
     if (tab === "hatchery") neededScreens.push("hatchery");
     if (tab === "pens") neededScreens.push("pens");
     if (tab === "flock") neededScreens.push("flock");
@@ -6151,6 +6164,7 @@ function App() {
   }
   async function pushToGist(configPatch) {
     const cfg = persistGistConfig(configPatch || {});
+    if (cfg.syncEnabled === false) throw new Error("Gist sync is turned off on this device.");
     if (!cfg.token) throw new Error("GitHub token is required.");
     if (!cfg.fileName) throw new Error("Gist file name is required.");
     const deviceId = ensureGistDeviceId();
@@ -6223,6 +6237,7 @@ function App() {
   }
   async function pullFromGist(configPatch) {
     const cfg = persistGistConfig(configPatch || {});
+    if (cfg.syncEnabled === false) throw new Error("Gist sync is turned off on this device.");
     if (!cfg.token) throw new Error("GitHub token is required.");
     if (!cfg.gistId) throw new Error("Gist ID is required.");
     const remoteInfo = await readRemoteGistSnapshot(cfg);
@@ -6318,6 +6333,10 @@ function App() {
       setTab("hatchery");
       return;
     }
+    if (section === "workspace") {
+      setTab("workspace");
+      return;
+    }
     if (section === "tasks") {
       openSettingsTab("tasks");
       return;
@@ -6342,6 +6361,14 @@ function App() {
       birdId,
       penId: options?.penId || null
     });
+  }
+  function openWorkspaceLaunch(kind = "", options = {}) {
+    setPendingWorkspaceLaunch({
+      id: uid(),
+      kind: kind || "",
+      batchId: options?.batchId || ""
+    });
+    setTab("workspace");
   }
   function openBatchRecord(batchId) {
     if (!batchId) return;
@@ -6477,6 +6504,16 @@ function App() {
     onPushToGist: pushToGist,
     photoCache: photoCache,
     ensureBirdPhotos: ensureBirdPhotos
+  }), tab === "workspace" && renderLazyScreenView("workspace", {
+    batches: batches,
+    eggStates: eggStates,
+    eggPhotoCache: eggPhotoCache,
+    ensureEggPhotos: ensureEggProgressPhotos,
+    onAddEggPhoto: addEggProgressPhoto,
+    onUpdateEggPhoto: updateEggProgressPhoto,
+    launchRequest: pendingWorkspaceLaunch,
+    onLaunchHandled: () => setPendingWorkspaceLaunch(null),
+    onOpenBatch: openBatchRecord
   }), tab === "hatchery" && renderLazyScreenView("hatchery", {
     batches: batches,
     eggStates: eggStates,
@@ -6490,6 +6527,9 @@ function App() {
     onAddEggPhoto: addEggProgressPhoto,
     onUpdateEggPhoto: updateEggProgressPhoto,
     onDeleteEggPhoto: delEggProgressPhoto,
+    onOpenCandlingWorkspace: batchId => openWorkspaceLaunch("candling_capture", {
+      batchId
+    }),
     openBatchId: pendingBatchOpenId,
     onOpenBatchHandled: () => setPendingBatchOpenId("")
   }), tab === "pens" && renderLazyScreenView("pens", {

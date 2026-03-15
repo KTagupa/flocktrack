@@ -46,6 +46,7 @@ function Batches({
   onAddEggPhoto,
   onUpdateEggPhoto,
   onDeleteEggPhoto,
+  onOpenCandlingWorkspace,
   openBatchId = "",
   onOpenBatchHandled
 }) {
@@ -280,6 +281,13 @@ function Batches({
       batchId: targetBatch?.id || "",
       idx: 0
     });
+  }
+  function launchCandlingWorkspace(batchId = "") {
+    if (typeof onOpenCandlingWorkspace === "function") {
+      onOpenCandlingWorkspace(batchId);
+      return;
+    }
+    openCandlingWorkspace(batchId);
   }
   function selectWorkspaceBatch(batch) {
     if (!batch?.id) return;
@@ -916,7 +924,7 @@ function Batches({
       color: "#b45309",
       borderColor: "#fdba74"
     },
-    onClick: () => openCandlingWorkspace(gridB.id)
+    onClick: () => launchCandlingWorkspace(gridB.id)
   }, "\uD83D\uDCF7 Candling Capture")), React.createElement("div", {
     style: {
       display: "grid",
@@ -2016,7 +2024,7 @@ function Batches({
       color: "#b45309",
       borderColor: "#fdba74"
     },
-    onClick: () => openCandlingWorkspace()
+    onClick: () => launchCandlingWorkspace()
   }, "\uD83D\uDCF7 Candling Capture"), React.createElement("button", {
     style: {
       ...C.btn,
