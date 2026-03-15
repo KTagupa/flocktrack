@@ -5,6 +5,11 @@ const normalizeEggPhotoDay = (value, totalDays = EGG_PROGRESS_TOTAL_DAYS) => {
   return Math.max(1, Math.min(max, day || 1));
 };
 const sortEggProgressPhotos = photos => [...(Array.isArray(photos) ? photos : [])].sort((a, b) => normalizeEggPhotoDay(a?.dayNumber) - normalizeEggPhotoDay(b?.dayNumber) || new Date(a?.takenAt || 0) - new Date(b?.takenAt || 0));
+const findEggPhotoForDay = (photos, dayNumber, totalDays = EGG_PROGRESS_TOTAL_DAYS) => {
+  const targetDay = normalizeEggPhotoDay(dayNumber, totalDays);
+  const matches = sortEggProgressPhotos(photos).filter(photo => normalizeEggPhotoDay(photo?.dayNumber, totalDays) === targetDay);
+  return matches.length ? matches[matches.length - 1] : null;
+};
 const eggPhotoDayLabel = (value, totalDays = EGG_PROGRESS_TOTAL_DAYS) => `Day ${normalizeEggPhotoDay(value, totalDays)}`;
 const eggPhotoShortDate = ts => {
   if (!ts) return "";
@@ -49,6 +54,7 @@ function Batches({
   const [editB, setEditB] = useState(null);
   const [gridB, setGridB] = useState(null);
   const [eggAct, setEggAct] = useState(null);
+  const [workspace, setWorkspace] = useState(null);
   const [eggPhotoBusy, setEggPhotoBusy] = useState(false);
   const [eggPhotoStatus, setEggPhotoStatus] = useState({
     kind: "idle",
@@ -76,6 +82,7 @@ function Batches({
   const [failNote, setFailNote] = useState("");
   const camRef = useRef(null);
   const galRef = useRef(null);
+  const workspaceCamRef = useRef(null);
   const statusTimer = useRef(null);
   const newCode = nextCode(batches);
   const eggStateById = useMemo(() => new Map(eggStates.map(state => [state.id, state])), [eggStates]);
@@ -146,6 +153,37 @@ function Batches({
     if (!activeEggPhotos.length) return null;
     return activeEggPhotos.find(photo => photo.id === eggAct?.selectedPhotoId) || activeEggPhotos[activeEggPhotos.length - 1];
   }, [activeEggPhotos, eggAct?.selectedPhotoId]);
+  const workspaceBatch = useMemo(() => workspace?.kind === "candling_capture" && workspace?.batchId ? batches.find(batch => batch.id === workspace.batchId) || null : null, [batches, workspace?.batchId, workspace?.kind]);
+  const workspaceIncubation = workspaceBatch?.id ? batchIncubationById.get(workspaceBatch.id) || null : null;
+  const workspaceEggCount = Math.max(0, Number(workspaceBatch?.eggCount) || 0);
+  const workspaceEggIndex = Math.max(0, Math.min(workspaceEggCount > 0 ? workspaceEggCount - 1 : 0, Number(workspace?.idx) || 0));
+  const workspaceEggCode = workspaceBatch && workspaceEggCount ? eggCode(workspaceBatch.code, workspaceEggIndex) : "";
+  const workspaceDayNumber = workspaceBatch?.id ? resolveEggPhotoDay(workspaceBatch.id) : 1;
+  const workspaceEggState = workspaceEggCode ? eggStateById.get(workspaceEggCode) || null : null;
+  const workspaceEggPhotos = useMemo(() => workspaceEggCode ? sortEggProgressPhotos(eggPhotoCache[workspaceEggCode] || []) : [], [eggPhotoCache, workspaceEggCode]);
+  const workspaceTodayPhoto = useMemo(() => workspaceEggCode ? findEggPhotoForDay(workspaceEggPhotos, workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS) : null, [workspaceDayNumber, workspaceEggCode, workspaceEggPhotos, workspaceIncubation?.totalDays]);
+  const workspaceCaptureStats = useMemo(() => {
+    if (!workspaceBatch || !workspaceEggCount) return {
+      captured: 0,
+      total: workspaceEggCount,
+      unresolved: 0
+    };
+    let captured = 0;
+    let unresolved = 0;
+    for (let i = 0; i < workspaceEggCount; i += 1) {
+      const code = eggCode(workspaceBatch.code, i);
+      if (!Object.prototype.hasOwnProperty.call(eggPhotoCache, code)) {
+        unresolved += 1;
+        continue;
+      }
+      if (findEggPhotoForDay(eggPhotoCache[code] || [], workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)) captured += 1;
+    }
+    return {
+      captured,
+      total: workspaceEggCount,
+      unresolved
+    };
+  }, [eggPhotoCache, workspaceBatch, workspaceDayNumber, workspaceEggCount, workspaceIncubation?.totalDays]);
   useEffect(() => () => {
     if (statusTimer.current) clearTimeout(statusTimer.current);
   }, []);
@@ -186,6 +224,19 @@ function Batches({
     const nextDraft = String(normalizeEggPhotoDay(selectedEggPhoto.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS));
     setPhotoDayDraft(prev => prev === nextDraft ? prev : nextDraft);
   }, [activeEggIncubation?.totalDays, selectedEggPhoto?.dayNumber, selectedEggPhoto?.id]);
+  useEffect(() => {
+    if (!workspaceBatch?.id || typeof ensureEggPhotos !== "function") return;
+    const missingEggIds = [];
+    for (let i = 0; i < workspaceEggCount; i += 1) {
+      const code = eggCode(workspaceBatch.code, i);
+      if (!Object.prototype.hasOwnProperty.call(eggPhotoCache, code)) missingEggIds.push(code);
+    }
+    if (!missingEggIds.length) return;
+    Promise.all(missingEggIds.map(code => ensureEggPhotos(code).catch(err => {
+      console.error(err);
+      return [];
+    }))).catch(console.error);
+  }, [eggPhotoCache, ensureEggPhotos, workspaceBatch?.code, workspaceBatch?.id, workspaceEggCount]);
   function flashEggPhoto(kind, msg) {
     if (statusTimer.current) clearTimeout(statusTimer.current);
     setEggPhotoStatus({
@@ -198,8 +249,7 @@ function Batches({
       msg: ""
     }), 2600);
   }
-  function closeEggModal() {
-    setEggAct(null);
+  function resetEggPhotoUi() {
     setEggPhotoBusy(false);
     setPhotoDayDraft("");
     if (statusTimer.current) clearTimeout(statusTimer.current);
@@ -208,9 +258,110 @@ function Batches({
       msg: ""
     });
   }
+  function closeEggModal() {
+    setEggAct(null);
+    resetEggPhotoUi();
+  }
+  function closeWorkspace() {
+    setWorkspace(null);
+    resetEggPhotoUi();
+  }
   function resolveEggPhotoDay(batchId) {
     const incubation = batchIncubationById.get(batchId) || null;
     return normalizeEggPhotoDay(incubation?.dayNumber || 1, incubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS);
+  }
+  function openCandlingWorkspace(batchId = "") {
+    const targetBatch = batchId ? batches.find(batch => batch.id === batchId) || null : null;
+    setGridB(null);
+    setEggAct(null);
+    resetEggPhotoUi();
+    setWorkspace({
+      kind: "candling_capture",
+      batchId: targetBatch?.id || "",
+      idx: 0
+    });
+  }
+  function selectWorkspaceBatch(batch) {
+    if (!batch?.id) return;
+    setWorkspace({
+      kind: "candling_capture",
+      batchId: batch.id,
+      idx: 0
+    });
+  }
+  function setWorkspaceEggIndex(idx) {
+    if (!workspaceBatch) return;
+    const maxIdx = Math.max(0, (workspaceBatch.eggCount || 1) - 1);
+    setWorkspace(prev => prev ? {
+      ...prev,
+      batchId: workspaceBatch.id,
+      idx: Math.max(0, Math.min(maxIdx, idx))
+    } : prev);
+  }
+  function moveWorkspaceEgg(direction) {
+    setWorkspaceEggIndex(workspaceEggIndex + direction);
+  }
+  async function getEggPhotosForEgg(eggId) {
+    if (!eggId) return [];
+    if (Object.prototype.hasOwnProperty.call(eggPhotoCache, eggId)) return sortEggProgressPhotos(eggPhotoCache[eggId] || []);
+    if (typeof ensureEggPhotos === "function") return sortEggProgressPhotos(await ensureEggPhotos(eggId));
+    return [];
+  }
+  async function saveEggPhotoFromFile(file, target) {
+    if (!file || !target?.eggId || !target?.batchId || typeof onAddEggPhoto !== "function") return null;
+    if (!file.type.startsWith("image/")) {
+      flashEggPhoto("err", "Please select an image file.");
+      return null;
+    }
+    const totalDays = target.totalDays || EGG_PROGRESS_TOTAL_DAYS;
+    const dayNumber = normalizeEggPhotoDay(target.dayNumber || resolveEggPhotoDay(target.batchId), totalDays);
+    setEggPhotoBusy(true);
+    flashEggPhoto("busy", "Processing photo...");
+    try {
+      const existingPhotos = await getEggPhotosForEgg(target.eggId);
+      const existingPhoto = findEggPhotoForDay(existingPhotos, dayNumber, totalDays);
+      const takenAt = new Date().toISOString();
+      const dataUrl = await compressImg(file);
+      const sizeKb = Math.round(dataUrl.length * .75 / 1024);
+      const nextPhoto = existingPhoto ? {
+        ...existingPhoto,
+        batchId: target.batchId,
+        idx: target.idx,
+        dayNumber,
+        takenAt,
+        modifiedAt: takenAt,
+        sizeKb,
+        dataUrl
+      } : {
+        id: uid(),
+        eggId: target.eggId,
+        batchId: target.batchId,
+        idx: target.idx,
+        dayNumber,
+        takenAt,
+        createdAt: takenAt,
+        sizeKb,
+        dataUrl
+      };
+      if (existingPhoto) {
+        if (typeof onUpdateEggPhoto !== "function") throw new Error("Egg photo updates are unavailable.");
+        await onUpdateEggPhoto(nextPhoto);
+      } else {
+        await onAddEggPhoto(nextPhoto);
+      }
+      if (typeof target.onSaved === "function") target.onSaved(nextPhoto, existingPhoto);
+      flashEggPhoto("ok", `${existingPhoto ? "Replaced" : "Saved"} photo for ${eggPhotoDayLabel(dayNumber, totalDays)}.`);
+      return {
+        photo: nextPhoto,
+        replaced: !!existingPhoto
+      };
+    } catch (err) {
+      console.error(err);
+      flashEggPhoto("err", "Could not save egg photo. Please try again.");
+      return null;
+    } finally {
+      setEggPhotoBusy(false);
+    }
   }
   function saveBatch() {
     if (!form.count) return;
@@ -299,44 +450,40 @@ function Batches({
       e.target.value = "";
       return;
     }
-    if (!eggAct || typeof onAddEggPhoto !== "function") {
+    if (!eggAct) {
       e.target.value = "";
       return;
     }
-    if (!file.type.startsWith("image/")) {
-      flashEggPhoto("err", "Please select an image file.");
-      e.target.value = "";
-      return;
-    }
-    setEggPhotoBusy(true);
-    flashEggPhoto("busy", "Processing photo...");
-    try {
-      const takenAt = new Date().toISOString();
-      const dataUrl = await compressImg(file);
-      const photo = {
-        id: uid(),
-        eggId: eggAct.code,
-        batchId: eggAct.batchId,
-        idx: eggAct.idx,
-        dayNumber: resolveEggPhotoDay(eggAct.batchId),
-        takenAt,
-        createdAt: takenAt,
-        sizeKb: Math.round(dataUrl.length * .75 / 1024),
-        dataUrl
-      };
-      await onAddEggPhoto(photo);
-      setEggAct(prev => prev?.code === photo.eggId ? {
+    await saveEggPhotoFromFile(file, {
+      eggId: eggAct.code,
+      batchId: eggAct.batchId,
+      idx: eggAct.idx,
+      totalDays: activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS,
+      onSaved: photo => setEggAct(prev => prev?.code === photo.eggId ? {
         ...prev,
         selectedPhotoId: photo.id
-      } : prev);
-      flashEggPhoto("ok", `Photo saved for ${eggPhotoDayLabel(photo.dayNumber, activeEggIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}.`);
-    } catch (err) {
-      console.error(err);
-      flashEggPhoto("err", "Could not save egg photo. Please try again.");
-    } finally {
-      setEggPhotoBusy(false);
+      } : prev)
+    });
+    e.target.value = "";
+  }
+  async function handleWorkspaceCaptureFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) {
       e.target.value = "";
+      return;
     }
+    if (!workspaceEggCode || !workspaceBatch?.id) {
+      e.target.value = "";
+      return;
+    }
+    await saveEggPhotoFromFile(file, {
+      eggId: workspaceEggCode,
+      batchId: workspaceBatch.id,
+      idx: workspaceEggIndex,
+      dayNumber: workspaceDayNumber,
+      totalDays: workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS
+    });
+    e.target.value = "";
   }
   async function saveSelectedEggPhotoDay() {
     if (!selectedEggPhoto || typeof onUpdateEggPhoto !== "function") return;
@@ -733,9 +880,17 @@ function Batches({
   }, "\u2715")), gridIncubationCardEl, React.createElement("div", {
     style: {
       display: "flex",
+      justifyContent: "space-between",
       gap: 12,
       marginBottom: 12,
       fontSize: 13,
+      flexWrap: "wrap",
+      alignItems: "center"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
       flexWrap: "wrap"
     }
   }, React.createElement("span", {
@@ -753,7 +908,16 @@ function Batches({
       color: "#b91c1c",
       fontWeight: 700
     }
-  }, "\uD83D\uDC80 Failed")), React.createElement("div", {
+  }, "\uD83D\uDC80 Failed")), React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      background: "#fff7ed",
+      color: "#b45309",
+      borderColor: "#fdba74"
+    },
+    onClick: () => openCandlingWorkspace(gridB.id)
+  }, "\uD83D\uDCF7 Candling Capture")), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(5,1fr)",
@@ -1305,6 +1469,523 @@ function Batches({
       marginTop: 14
     }
   }, "Close"))) : null;
+  const workspaceSelectedEggLoaded = !!workspaceEggCode && Object.prototype.hasOwnProperty.call(eggPhotoCache, workspaceEggCode);
+  const workspaceEggFinalized = workspaceEggState?.status === "hatched" || workspaceEggState?.status === "failed";
+  const workspaceCaptureDisabled = eggPhotoBusy || !workspaceBatch?.id || !workspaceEggCode || workspaceIncubation?.isScheduled || workspaceEggFinalized;
+  const workspaceCaptureLabel = workspaceTodayPhoto ? "Replace Photo" : "Capture Photo";
+  const workspacePhotoPanelEl = workspaceBatch ? !workspaceEggCode ? React.createElement("div", {
+    style: {
+      borderRadius: 20,
+      border: "1px solid #d9e3ef",
+      background: "#ffffff",
+      padding: 22,
+      textAlign: "center",
+      color: "#475569"
+    }
+  }, "Select an egg to start capturing.") : React.createElement("div", {
+    style: {
+      borderRadius: 24,
+      border: "1px solid #d9e3ef",
+      background: "#ffffff",
+      padding: 18,
+      boxShadow: "0 20px 40px -32px #00000099"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 12,
+      alignItems: "flex-start",
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      letterSpacing: ".08em",
+      textTransform: "uppercase",
+      color: "#64748b"
+    }
+  }, "Selected Egg"), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 28,
+      fontWeight: 900,
+      color: "#0f172a"
+    }
+  }, workspaceEggCode), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 14,
+      color: "#475569",
+      fontWeight: 700
+    }
+  }, `${eggPhotoDayLabel(workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)} · ${workspaceIncubation?.currentStage?.label || "Candling"}`)), React.createElement("div", {
+    style: C.badge(workspaceEggState?.status === "hatched" ? "#15803d" : workspaceEggState?.status === "failed" ? "#b91c1c" : workspaceTodayPhoto ? "#1d4ed8" : "#b45309")
+  }, workspaceEggState?.status === "hatched" ? "Hatched" : workspaceEggState?.status === "failed" ? "Failed" : workspaceTodayPhoto ? "Photo Ready" : "No Photo Yet")), !workspaceSelectedEggLoaded ? React.createElement("div", {
+    style: {
+      marginTop: 16,
+      borderRadius: 18,
+      border: "1px dashed #cbd5e1",
+      background: "#f8fafc",
+      minHeight: 260,
+      display: "grid",
+      placeItems: "center",
+      textAlign: "center",
+      padding: 18,
+      color: "#475569",
+      fontWeight: 700
+    }
+  }, "Loading photo slots...") : workspaceTodayPhoto ? React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      position: "relative",
+      borderRadius: 20,
+      overflow: "hidden",
+      background: "#0f172a",
+      minHeight: 280,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, workspaceTodayPhoto.dataUrl ? React.createElement("img", {
+    src: workspaceTodayPhoto.dataUrl,
+    alt: `${workspaceEggCode} ${eggPhotoDayLabel(workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}`,
+    style: {
+      width: "100%",
+      maxHeight: "52vh",
+      objectFit: "contain",
+      display: "block"
+    }
+  }) : React.createElement("div", {
+    style: {
+      color: "#cbd5e1",
+      fontWeight: 800
+    }
+  }, "Image unavailable"), React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 12,
+      left: 12,
+      borderRadius: 999,
+      background: "#ffffffdd",
+      padding: "6px 10px",
+      fontSize: 12,
+      fontWeight: 800,
+      color: "#0f172a"
+    }
+  }, eggPhotoDayLabel(workspaceTodayPhoto.dayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS))), React.createElement("div", {
+    style: {
+      marginTop: 12,
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+      fontSize: 13,
+      color: "#475569"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 700
+    }
+  }, "Current photo for today"), React.createElement("div", null, eggPhotoLongDate(workspaceTodayPhoto.takenAt) || "Unknown upload time"))) : React.createElement("div", {
+    style: {
+      marginTop: 16,
+      borderRadius: 20,
+      border: "2px dashed #cbd5e1",
+      background: "#f8fafc",
+      minHeight: 280,
+      display: "grid",
+      placeItems: "center",
+      textAlign: "center",
+      padding: 18
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 38
+    }
+  }, "\uD83D\uDCF7"), React.createElement("div", {
+    style: {
+      marginTop: 8,
+      fontSize: 18,
+      fontWeight: 900,
+      color: "#0f172a"
+    }
+  }, "No photo for today"), React.createElement("div", {
+    style: {
+      marginTop: 6,
+      fontSize: 14,
+      color: "#475569",
+      lineHeight: 1.5
+    }
+  }, "Capture a candling photo for ", eggPhotoDayLabel(workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS), "."))), React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, workspaceIncubation?.isScheduled ? React.createElement("div", {
+    style: {
+      borderRadius: 16,
+      border: "1px solid #fed7aa",
+      background: "#fff7ed",
+      padding: 14,
+      color: "#9a3412",
+      fontWeight: 700,
+      lineHeight: 1.5
+    }
+  }, "Incubation starts ", fmtDate(workspaceIncubation.incubationStartDate), ". Capture opens when the batch is already on incubation.") : workspaceEggState?.status === "hatched" ? React.createElement("div", {
+    style: {
+      borderRadius: 16,
+      border: "1px solid #bbf7d0",
+      background: "#f0fdf4",
+      padding: 14,
+      color: "#166534",
+      fontWeight: 700
+    }
+  }, "This egg is already marked hatched. Use the regular egg record if you need to edit history.") : workspaceEggState?.status === "failed" ? React.createElement("div", {
+    style: {
+      borderRadius: 16,
+      border: "1px solid #fecaca",
+      background: "#fef2f2",
+      padding: 14,
+      color: "#991b1b",
+      fontWeight: 700
+    }
+  }, "This egg is already marked failed. Use the regular egg record if you need to edit history.") : React.createElement("button", {
+    style: {
+      ...C.btn,
+      marginTop: 0,
+      background: workspaceTodayPhoto ? "#1d4ed8" : "#b45309"
+    },
+    onClick: () => workspaceCamRef.current && workspaceCamRef.current.click(),
+    disabled: workspaceCaptureDisabled
+  }, eggPhotoBusy ? "Saving..." : workspaceCaptureLabel), React.createElement("input", {
+    ref: workspaceCamRef,
+    type: "file",
+    accept: "image/*",
+    capture: "environment",
+    style: {
+      display: "none"
+    },
+    onChange: handleWorkspaceCaptureFile,
+    disabled: workspaceCaptureDisabled
+  }), eggPhotoStatus.kind !== "idle" && React.createElement("div", {
+    style: {
+      marginTop: 10,
+      fontSize: 13,
+      textAlign: "center",
+      color: eggPhotoStatus.kind === "ok" ? "#15803d" : eggPhotoStatus.kind === "err" ? "#b91c1c" : "#475569",
+      fontWeight: eggPhotoStatus.kind === "busy" ? 700 : 600
+    }
+  }, eggPhotoStatus.msg))) : null;
+  const candlingWorkspaceEl = workspace?.kind === "candling_capture" ? React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 320,
+      background: "#eef3f9",
+      overflowY: "auto",
+      padding: "14px 14px 120px"
+    }
+  }, React.createElement("div", {
+    style: {
+      maxWidth: 760,
+      margin: "0 auto"
+    }
+  }, React.createElement("div", {
+    style: {
+      position: "sticky",
+      top: 0,
+      zIndex: 2,
+      padding: "10px 0 14px",
+      background: "linear-gradient(180deg,#eef3f9 82%,#eef3f900 100%)"
+    }
+  }, React.createElement("div", {
+    style: {
+      borderRadius: 24,
+      border: "1px solid #d9e3ef",
+      background: "#ffffff",
+      padding: 16,
+      boxShadow: "0 18px 34px -26px #00000088"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      gap: 12
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      letterSpacing: ".08em",
+      textTransform: "uppercase",
+      color: "#64748b"
+    }
+  }, "Workspace"), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 28,
+      fontWeight: 900,
+      color: "#0f172a"
+    }
+  }, "Candling Capture"), React.createElement("div", {
+    style: {
+      marginTop: 6,
+      fontSize: 14,
+      color: "#475569",
+      lineHeight: 1.5
+    }
+  }, workspaceBatch ? `${workspaceBatch.code} · ${eggPhotoDayLabel(workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)} · ${workspaceCaptureStats.captured}/${workspaceCaptureStats.total} captured` : "Choose a batch, then tap an egg to capture today's candling photo.")), React.createElement("button", {
+    onClick: closeWorkspace,
+    style: {
+      ...C.sec,
+      marginTop: 0
+    }
+  }, "\u2715")))), !batches.length ? React.createElement(Empty, {
+    icon: "\uD83E\uDD5A",
+    msg: "Add a batch before using Candling Capture."
+  }) : !workspaceBatch ? React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 12
+    }
+  }, batches.map(batch => {
+    const stats = batchStatsById.get(batch.id) || {
+      pending: batch.eggCount || 0
+    };
+    const incubation = batchIncubationById.get(batch.id) || null;
+    const batchNo = batchNoFromBatchCode(batch.code);
+    const theme = batchTheme(batchNo);
+    return React.createElement("button", {
+      key: batch.id,
+      onClick: () => selectWorkspaceBatch(batch),
+      style: {
+        ...C.card,
+        marginBottom: 0,
+        textAlign: "left",
+        background: theme.soft,
+        borderColor: theme.border,
+        cursor: "pointer"
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        alignItems: "flex-start"
+      }
+    }, React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontSize: 24,
+        fontWeight: 900,
+        color: theme.color
+      }
+    }, batch.code), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        fontSize: 14,
+        color: "#475569"
+      }
+    }, `${fmtNum(batch.eggCount || 0)} eggs · ${stats.pending || 0} pending`), React.createElement("div", {
+      style: {
+        marginTop: 6,
+        fontSize: 13,
+        color: "#7c2d12",
+        fontWeight: 700
+      }
+    }, incubation?.isScheduled ? `Starts ${fmtDate(incubation.incubationStartDate)}` : incubation ? `${eggPhotoDayLabel(incubation.dayNumber, incubation.totalDays)} · ${incubation.currentStage?.humidity || "—"}` : "Incubation details unavailable")), React.createElement("div", {
+      style: {
+        ...C.badge("#b45309"),
+        alignSelf: "center"
+      }
+    }, "Open")));
+  })) : React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 12,
+      background: "#fff7ed",
+      borderColor: "#fed7aa"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      letterSpacing: ".06em",
+      textTransform: "uppercase",
+      color: "#9a3412"
+    }
+  }, "Current Batch"), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 24,
+      fontWeight: 900,
+      color: "#7c2d12"
+    }
+  }, workspaceBatch.code), React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 14,
+      color: "#9a3412",
+      lineHeight: 1.5
+    }
+  }, `${fmtNum(workspaceCaptureStats.captured)} of ${fmtNum(workspaceCaptureStats.total)} eggs captured for ${eggPhotoDayLabel(workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS)}.`), workspaceCaptureStats.unresolved > 0 && React.createElement("div", {
+    style: {
+      marginTop: 4,
+      fontSize: 12,
+      color: "#7c2d12",
+      fontWeight: 700
+    }
+  }, `Loading ${workspaceCaptureStats.unresolved} remaining photo slot${workspaceCaptureStats.unresolved === 1 ? "" : "s"}...`)), React.createElement("button", {
+    onClick: () => setWorkspace({
+      kind: "candling_capture",
+      batchId: "",
+      idx: 0
+    }),
+    style: {
+      ...C.sec,
+      marginTop: 0
+    }
+  }, "Change Batch"))), React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 14,
+      background: "#ffffff"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 800,
+      color: "#0f172a"
+    }
+  }, "Eggs in this batch"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#64748b",
+      fontWeight: 700
+    }
+  }, "Tap any egg to focus it")), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(4,minmax(0,1fr))",
+      gap: 10,
+      marginTop: 14
+    }
+  }, Array.from({
+    length: workspaceEggCount
+  }, (_, i) => {
+    const code = eggCode(workspaceBatch.code, i);
+    const state = eggStateById.get(code) || null;
+    const photoLoaded = Object.prototype.hasOwnProperty.call(eggPhotoCache, code);
+    const todayPhoto = photoLoaded ? findEggPhotoForDay(eggPhotoCache[code] || [], workspaceDayNumber, workspaceIncubation?.totalDays || EGG_PROGRESS_TOTAL_DAYS) : null;
+    const isSelected = i === workspaceEggIndex;
+    const isHatched = state?.status === "hatched";
+    const isFailed = state?.status === "failed";
+    return React.createElement("button", {
+      key: code,
+      onClick: () => setWorkspaceEggIndex(i),
+      style: {
+        border: `2px solid ${isSelected ? "#b45309" : isHatched ? "#86efac" : isFailed ? "#fca5a5" : todayPhoto ? "#93c5fd" : "#d9e3ef"}`,
+        background: isSelected ? "#fff7ed" : isHatched ? "#f0fdf4" : isFailed ? "#fef2f2" : todayPhoto ? "#eff6ff" : "#ffffff",
+        borderRadius: 16,
+        minHeight: 92,
+        padding: "10px 6px 8px",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 6
+      }
+    }, React.createElement("div", {
+      style: {
+        width: "100%",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center"
+      }
+    }, React.createElement("span", {
+      style: {
+        fontSize: 18
+      }
+    }, isHatched ? "\uD83D\uDC23" : isFailed ? "\uD83D\uDC80" : todayPhoto ? "\uD83D\uDCF7" : "\uD83E\uDD5A"), React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 800,
+        color: todayPhoto ? "#1d4ed8" : "#64748b"
+      }
+    }, todayPhoto ? "TODAY" : photoLoaded ? "EMPTY" : "...")), React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 900,
+        color: "#0f172a",
+        wordBreak: "break-all"
+      }
+    }, code.split("-").slice(1).join("-")), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 800,
+        color: isHatched ? "#15803d" : isFailed ? "#b91c1c" : todayPhoto ? "#1d4ed8" : "#64748b"
+      }
+    }, isHatched ? "Hatched" : isFailed ? "Failed" : todayPhoto ? "Captured" : "Open"));
+  }))), workspacePhotoPanelEl)), workspaceBatch && workspaceEggCount > 0 && React.createElement("div", {
+    style: {
+      position: "fixed",
+      left: 16,
+      right: 16,
+      bottom: 20,
+      zIndex: 3,
+      pointerEvents: "none"
+    }
+  }, React.createElement("div", {
+    style: {
+      maxWidth: 760,
+      margin: "0 auto",
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 12
+    }
+  }, React.createElement("button", {
+    style: {
+      ...C.sec,
+      pointerEvents: "auto",
+      background: "#ffffffee",
+      backdropFilter: "blur(8px)",
+      opacity: workspaceEggIndex <= 0 ? 0.55 : 1
+    },
+    onClick: () => moveWorkspaceEgg(-1),
+    disabled: workspaceEggIndex <= 0
+  }, "\u2190 Previous"), React.createElement("button", {
+    style: {
+      ...C.sec,
+      pointerEvents: "auto",
+      background: "#ffffffee",
+      backdropFilter: "blur(8px)",
+      opacity: workspaceEggIndex >= workspaceEggCount - 1 ? 0.55 : 1
+    },
+    onClick: () => moveWorkspaceEgg(1),
+    disabled: workspaceEggIndex >= workspaceEggCount - 1
+  }, "Next \u2192")))) : null;
   return React.createElement("div", {
     style: C.body
   }, React.createElement("div", {
@@ -1320,7 +2001,23 @@ function Batches({
       fontWeight: 900,
       color: "#0f172a"
     }
-  }, "\uD83E\uDD5A Hatchery"), React.createElement("button", {
+  }, "\uD83E\uDD5A Hatchery"), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      justifyContent: "flex-end"
+    }
+  }, React.createElement("button", {
+    style: {
+      ...C.sec,
+      marginTop: 0,
+      background: "#fff7ed",
+      color: "#b45309",
+      borderColor: "#fdba74"
+    },
+    onClick: () => openCandlingWorkspace()
+  }, "\uD83D\uDCF7 Candling Capture"), React.createElement("button", {
     style: {
       ...C.btn,
       width: "auto",
@@ -1328,7 +2025,7 @@ function Batches({
       padding: "12px 20px"
     },
     onClick: () => setShowNew(true)
-  }, "+ New")), batches.length > 0 && React.createElement("div", {
+  }, "+ New"))), batches.length > 0 && React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(2,minmax(0,1fr))",
@@ -1566,5 +2263,5 @@ function Batches({
     }, b.notes), incubationEl, React.createElement("div", {
       style: C.div
     }), footerEl);
-  }), newBatchModal, editBatchModal, gridModalEl, eggActionModalEl);
+  }), newBatchModal, editBatchModal, gridModalEl, eggActionModalEl, candlingWorkspaceEl);
 }
