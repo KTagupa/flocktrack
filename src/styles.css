@@ -18,7 +18,8 @@ input,select,textarea{font-family:inherit}
 .pens-farm-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
 .pens-farm-add-btn{border:none;border-radius:15px;padding:12px 16px;background:var(--farm-brown);color:#fff;font-size:15px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:6px;box-shadow:0 12px 24px -16px #00000099;white-space:nowrap;transition:transform .2s ease,background-color .2s ease}
 .pens-farm-add-btn:hover{background:#7a5430;transform:translateY(-1px)}
-.pens-farm-assign-btn{padding-inline:14px}
+.pens-farm-primary-btn{flex:1 1 auto;min-width:0}
+.pens-farm-compact-btn{flex:0 0 auto;padding-inline:12px}
 .pens-farm-assign-btn-icon{font-size:16px;line-height:1}
 
 .pens-farm-tabs{background:#fff;padding:7px;border-radius:18px;display:flex;gap:8px;margin-bottom:16px;border:1px solid #e2e8f0;box-shadow:0 6px 18px -15px #00000088}
@@ -97,7 +98,8 @@ input,select,textarea{font-family:inherit}
   .pens-farm-header{flex-direction:column;align-items:stretch}
   .pens-farm-add-btn{width:100%;justify-content:center}
   .pens-farm-header-actions{width:100%}
-  .pens-farm-header-actions .pens-farm-add-btn{width:auto;flex:1 1 0;min-width:0}
+  .pens-farm-header-actions .pens-farm-primary-btn{width:auto;flex:1 1 auto;min-width:0}
+  .pens-farm-header-actions .pens-farm-compact-btn{width:auto;flex:0 0 auto}
 }
 @media (max-width:640px){
   .pens-farm-pen-header{flex-direction:column;align-items:stretch;gap:8px}

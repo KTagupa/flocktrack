@@ -2413,6 +2413,7 @@ function App() {
     onOpenBatchHandled: () => setPendingBatchOpenId("")
   }), tab === "pens" && renderLazyScreenView("pens", {
     pens: pens,
+    batches: batches,
     birds: birds,
     measurements: measurements,
     feedTypes: feedTypes,
