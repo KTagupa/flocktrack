@@ -297,6 +297,7 @@ function latestPhotoWithImage(photos) {
 
 function Pens({
   pens,
+  batches,
   birds,
   measurements,
   feedTypes,
@@ -322,8 +323,14 @@ function Pens({
   const [editingFeedTypeId, setEditingFeedTypeId] = useState("");
   const [showFeedLogForm, setShowFeedLogForm] = useState(false);
   const [showAssignBirdsForm, setShowAssignBirdsForm] = useState(false);
+  const [showMoveBirdsForm, setShowMoveBirdsForm] = useState(false);
   const [assignTargetPenId, setAssignTargetPenId] = useState("");
   const [assignBirdIds, setAssignBirdIds] = useState([]);
+  const [moveSourcePenId, setMoveSourcePenId] = useState("");
+  const [moveTargetPenId, setMoveTargetPenId] = useState("");
+  const [moveBatchFilter, setMoveBatchFilter] = useState("all");
+  const [moveStageFilter, setMoveStageFilter] = useState("all");
+  const [moveBirdIds, setMoveBirdIds] = useState([]);
   const [pensCarouselIndex, setPensCarouselIndex] = useState(0);
   const [expandedPenBirds, setExpandedPenBirds] = useState({});
   const [themePickerPenId, setThemePickerPenId] = useState("");
@@ -350,6 +357,11 @@ function Pens({
     pens.forEach(pen => map.set(pen.id, pen));
     return map;
   }, [pens]);
+  const batchById = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(batches) ? batches : []).forEach(batch => map.set(batch.id, batch));
+    return map;
+  }, [batches]);
   const pensOrdered = useMemo(() => [...pens].sort((a, b) => {
     const createdDiff = dateMs(a.createdAt) - dateMs(b.createdAt);
     if (createdDiff) return createdDiff;
@@ -435,6 +447,39 @@ function Pens({
   const canMovePrevPen = pensCarouselIndex > 0;
   const canMoveNextPen = pensCarouselIndex < pens.length - 1;
   const getPenBirdVisualMode = pen => pen?.birdVisualMode === "photo" ? "photo" : "sprite";
+  const moveSourceBirds = useMemo(() => sortBirdsByTag(activeBirdsByPen.get(moveSourcePenId) || []), [activeBirdsByPen, moveSourcePenId]);
+  const moveTargetPens = useMemo(() => pens.filter(pen => pen.id !== moveSourcePenId), [moveSourcePenId, pens]);
+  const moveBirdBatchFilterKey = bird => {
+    const batch = bird?.originBatchId ? batchById.get(bird.originBatchId) : null;
+    if (batch?.code) return `batch:${batch.id}`;
+    const outsider = parseOutsiderTagCode(bird?.tagId);
+    if (outsider?.batchNo) return `outsider:${outsider.batchNo}`;
+    const hatchNo = hatchTagBatchNo(bird?.tagId);
+    if (hatchNo) return `hatch:${hatchNo}`;
+    return "batch:unknown";
+  };
+  const moveBatchOptions = useMemo(() => {
+    const seen = new Map();
+    moveSourceBirds.forEach(bird => {
+      const key = moveBirdBatchFilterKey(bird);
+      if (!seen.has(key)) seen.set(key, birdBatchChipLabel(bird, batchById));
+    });
+    return [...seen.entries()].map(([id, label]) => ({
+      id,
+      label
+    })).sort((a, b) => a.label.localeCompare(b.label, undefined, {
+      numeric: true
+    }));
+  }, [batchById, moveSourceBirds]);
+  const moveStageOptions = useMemo(() => STAGES_BIRD_INFO.filter(stage => moveSourceBirds.some(bird => (bird.stage || "chick") === stage)).map(stage => ({
+    id: stage,
+    label: stageLabel(stage)
+  })), [moveSourceBirds]);
+  const filteredMoveSourceBirds = useMemo(() => moveSourceBirds.filter(bird => {
+    if (moveBatchFilter !== "all" && moveBirdBatchFilterKey(bird) !== moveBatchFilter) return false;
+    if (moveStageFilter !== "all" && (bird.stage || "chick") !== moveStageFilter) return false;
+    return true;
+  }), [moveBatchFilter, moveSourceBirds, moveStageFilter]);
 
   useEffect(() => {
     if (!pens.length) {
@@ -492,6 +537,46 @@ function Pens({
       return next.length === prev.length ? prev : next;
     });
   }, [showAssignBirdsForm, unassignedActiveBirds]);
+  useEffect(() => {
+    if (!showMoveBirdsForm) return;
+    if (!pensWithActiveBirds.length) {
+      if (moveSourcePenId) setMoveSourcePenId("");
+      return;
+    }
+    if (pensWithActiveBirds.some(pen => pen.id === moveSourcePenId)) return;
+    const preferredSourcePenId = currentPensCarouselPen && (activeBirdsByPen.get(currentPensCarouselPen.id) || []).length ? currentPensCarouselPen.id : pensWithActiveBirds[0]?.id || "";
+    setMoveSourcePenId(preferredSourcePenId);
+  }, [activeBirdsByPen, currentPensCarouselPen, moveSourcePenId, pensWithActiveBirds, showMoveBirdsForm]);
+  useEffect(() => {
+    if (!showMoveBirdsForm) return;
+    if (!moveTargetPens.length) {
+      if (moveTargetPenId) setMoveTargetPenId("");
+      return;
+    }
+    if (moveTargetPens.some(pen => pen.id === moveTargetPenId)) return;
+    const preferredTargetPenId = currentPensCarouselPen?.id && currentPensCarouselPen.id !== moveSourcePenId ? currentPensCarouselPen.id : moveTargetPens[0]?.id || "";
+    setMoveTargetPenId(preferredTargetPenId);
+  }, [currentPensCarouselPen, moveSourcePenId, moveTargetPenId, moveTargetPens, showMoveBirdsForm]);
+  useEffect(() => {
+    if (!showMoveBirdsForm) return;
+    const movableBirdIds = new Set(filteredMoveSourceBirds.map(bird => bird.id));
+    setMoveBirdIds(prev => {
+      const next = prev.filter(id => movableBirdIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [filteredMoveSourceBirds, showMoveBirdsForm]);
+  useEffect(() => {
+    if (!showMoveBirdsForm) return;
+    if (moveBatchFilter === "all") return;
+    if (moveBatchOptions.some(option => option.id === moveBatchFilter)) return;
+    setMoveBatchFilter("all");
+  }, [moveBatchFilter, moveBatchOptions, showMoveBirdsForm]);
+  useEffect(() => {
+    if (!showMoveBirdsForm) return;
+    if (moveStageFilter === "all") return;
+    if (moveStageOptions.some(option => option.id === moveStageFilter)) return;
+    setMoveStageFilter("all");
+  }, [moveStageFilter, moveStageOptions, showMoveBirdsForm]);
 
   function stepPensCarousel(offset) {
     if (!pens.length) return;
@@ -546,6 +631,26 @@ function Pens({
     setAssignTargetPenId(currentPensCarouselPen?.id || pens[0]?.id || "");
     setAssignBirdIds([]);
     setShowAssignBirdsForm(true);
+  }
+
+  function closeMoveBirdsForm() {
+    setShowMoveBirdsForm(false);
+    setMoveSourcePenId("");
+    setMoveTargetPenId("");
+    setMoveBatchFilter("all");
+    setMoveStageFilter("all");
+    setMoveBirdIds([]);
+  }
+
+  function openMoveBirdsForm() {
+    const preferredSourcePenId = currentPensCarouselPen && (activeBirdsByPen.get(currentPensCarouselPen.id) || []).length ? currentPensCarouselPen.id : pensWithActiveBirds[0]?.id || "";
+    const preferredTargetPenId = pens.find(pen => pen.id !== preferredSourcePenId)?.id || "";
+    setMoveSourcePenId(preferredSourcePenId);
+    setMoveTargetPenId(preferredTargetPenId);
+    setMoveBatchFilter("all");
+    setMoveStageFilter("all");
+    setMoveBirdIds([]);
+    setShowMoveBirdsForm(true);
   }
 
   function openAddFeedTypeForm() {
@@ -714,6 +819,70 @@ function Pens({
     } catch (err) {
       console.error(err);
       window.alert("Could not assign the selected birds. Please try again.");
+    }
+  }
+
+  function toggleMoveBird(birdId) {
+    if (!birdId) return;
+    setMoveBirdIds(prev => prev.includes(birdId) ? prev.filter(id => id !== birdId) : [...prev, birdId]);
+  }
+
+  function toggleMoveBirdsCheckAll() {
+    if (!filteredMoveSourceBirds.length) return;
+    const nextIds = filteredMoveSourceBirds.map(bird => bird.id);
+    setMoveBirdIds(prev => prev.length === nextIds.length ? [] : nextIds);
+  }
+
+  function saveMovedBirds() {
+    if (typeof onUpdateBird !== "function") {
+      window.alert("Bird moving is currently unavailable.");
+      return;
+    }
+    if (!moveSourcePenId) {
+      window.alert("Choose the source pen first.");
+      return;
+    }
+    if (!moveTargetPenId) {
+      window.alert("Choose the destination pen first.");
+      return;
+    }
+    if (moveTargetPenId === moveSourcePenId) {
+      window.alert("Choose a different destination pen.");
+      return;
+    }
+    if (!moveBirdIds.length) {
+      window.alert("Select at least one bird to move.");
+      return;
+    }
+    const selectedBirdIds = new Set(moveBirdIds);
+    const selectedBirds = filteredMoveSourceBirds.filter(bird => selectedBirdIds.has(bird.id));
+    if (!selectedBirds.length) {
+      window.alert("No active birds are available in the selected source pen.");
+      return;
+    }
+    const updatedAt = new Date().toISOString();
+    const changeDate = today();
+    try {
+      selectedBirds.forEach(bird => {
+        const penUpdate = buildBirdPenUpdate({
+          bird,
+          nextPenId: moveTargetPenId,
+          nextStatus: bird.status || "active",
+          changeDate,
+          reason: "pen_transfer",
+          makeId: uid
+        });
+        onUpdateBird({
+          ...bird,
+          penId: penUpdate.penId,
+          penHistory: penUpdate.penHistory,
+          updatedAt
+        });
+      });
+      closeMoveBirdsForm();
+    } catch (err) {
+      console.error(err);
+      window.alert("Could not move the selected birds. Please try again.");
     }
   }
 
@@ -1292,11 +1461,267 @@ function Pens({
     disabled: !assignTargetPenId || !assignBirdIds.length,
     onClick: saveAssignedBirds
   }, "Assign Birds")));
+  const isAllMovableBirdsChecked = !!filteredMoveSourceBirds.length && moveBirdIds.length === filteredMoveSourceBirds.length;
+  const moveBirdsModal = showMoveBirdsForm && React.createElement(Modal, {
+    title: "Move Birds",
+    onClose: closeMoveBirdsForm
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#475569",
+      lineHeight: 1.45,
+      marginBottom: 14
+    }
+  }, "Pick the source pen, check the chicks or birds you want to move, then choose the destination pen."), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+      gap: 12,
+      marginBottom: 14
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#475569",
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, "From Pen"), !pensWithActiveBirds.length ? React.createElement("div", {
+    style: C.card
+  }, "No pens with active birds are ready to move from.") : React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 8
+    }
+  }, pensWithActiveBirds.map(pen => {
+    const isActive = moveSourcePenId === pen.id;
+    const activeCount = (activeBirdsByPen.get(pen.id) || []).length;
+    return React.createElement("button", {
+      key: `move-source-${pen.id}`,
+      type: "button",
+      onClick: () => setMoveSourcePenId(pen.id),
+      style: {
+        border: isActive ? "2px solid #1d4ed8" : "1px solid #cbd5e1",
+        background: isActive ? "#eff6ff" : "#ffffff",
+        borderRadius: 14,
+        padding: "10px 12px",
+        textAlign: "left",
+        cursor: "pointer"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: "#0f172a"
+      }
+    }, pen.name || "Pen"), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        fontSize: 12,
+        color: "#64748b"
+      }
+    }, activeCount, " active"));
+  }))), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#475569",
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, "To Pen"), !moveTargetPens.length ? React.createElement("div", {
+    style: C.card
+  }, "Add another pen first so birds have somewhere to move.") : React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 8
+    }
+  }, moveTargetPens.map(pen => {
+    const isActive = moveTargetPenId === pen.id;
+    const activeCount = (activeBirdsByPen.get(pen.id) || []).length;
+    return React.createElement("button", {
+      key: `move-target-${pen.id}`,
+      type: "button",
+      onClick: () => setMoveTargetPenId(pen.id),
+      style: {
+        border: isActive ? "2px solid #4f772d" : "1px solid #cbd5e1",
+        background: isActive ? "#f3f9eb" : "#ffffff",
+        borderRadius: 14,
+        padding: "10px 12px",
+        textAlign: "left",
+        cursor: "pointer"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: "#0f172a"
+      }
+    }, pen.name || "Pen"), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        fontSize: 12,
+        color: "#64748b"
+      }
+    }, activeCount, " active"));
+  })))), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      marginBottom: 8,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#475569",
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, moveSourcePenId ? "Birds To Move" : "Birds"), React.createElement("label", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 13,
+      fontWeight: 700,
+      color: filteredMoveSourceBirds.length ? "#334155" : "#94a3b8",
+      cursor: filteredMoveSourceBirds.length ? "pointer" : "default"
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: isAllMovableBirdsChecked,
+    disabled: !filteredMoveSourceBirds.length,
+    onChange: toggleMoveBirdsCheckAll
+  }), isAllMovableBirdsChecked ? "Uncheck all" : "Check all")), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginBottom: 14
+    }
+  }, React.createElement(FL, {
+    lbl: "Batch"
+  }, React.createElement("select", {
+    style: C.sel,
+    value: moveBatchFilter,
+    onChange: e => setMoveBatchFilter(e.target.value)
+  }, React.createElement("option", {
+    value: "all"
+  }, "All batches"), moveBatchOptions.map(option => React.createElement("option", {
+    key: `move-batch-${option.id}`,
+    value: option.id
+  }, option.label)))), React.createElement(FL, {
+    lbl: "Stage"
+  }, React.createElement("select", {
+    style: C.sel,
+    value: moveStageFilter,
+    onChange: e => setMoveStageFilter(e.target.value)
+  }, React.createElement("option", {
+    value: "all"
+  }, "All stages"), moveStageOptions.map(option => React.createElement("option", {
+    key: `move-stage-${option.id}`,
+    value: option.id
+  }, option.label))))), !moveSourceBirds.length ? React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 14
+    }
+  }, moveSourcePenId ? "No active birds are currently in the selected source pen." : "Pick a source pen to list the birds you can move.") : !filteredMoveSourceBirds.length ? React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 14
+    }
+  }, "No birds match the selected batch and stage filters.") : React.createElement("div", {
+    style: {
+      border: "1px solid #d9e3ef",
+      borderRadius: 16,
+      background: "#f8fafc",
+      maxHeight: 320,
+      overflowY: "auto",
+      marginBottom: 14
+    }
+  }, filteredMoveSourceBirds.map((bird, index) => {
+    const checked = moveBirdIds.includes(bird.id);
+    const nickname = String(bird.nickname || "").trim();
+    const birdName = nickname || bird.tagId || "Bird";
+    const birdMeta = [birdBatchChipLabel(bird, batchById), nickname && bird.tagId ? `Tag ${bird.tagId}` : "", penBirdDetailLabel(bird.stage), penBirdDetailLabel(bird.sex)].filter(Boolean).join(" · ");
+    return React.createElement("label", {
+      key: `move-bird-${bird.id}`,
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "12px 14px",
+        cursor: "pointer",
+        background: checked ? "#eff6ff" : "transparent",
+        borderBottom: index === filteredMoveSourceBirds.length - 1 ? "none" : "1px solid #e2e8f0"
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked,
+      onChange: () => toggleMoveBird(bird.id),
+      style: {
+        marginTop: 2
+      }
+    }), React.createElement("div", {
+      style: {
+        minWidth: 0,
+        flex: 1
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: "#0f172a",
+        lineHeight: 1.25,
+        wordBreak: "break-word"
+      }
+    }, birdName), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        fontSize: 13,
+        color: "#64748b",
+        lineHeight: 1.35,
+        wordBreak: "break-word"
+      }
+    }, birdMeta || "Ready to move")));
+  })), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#64748b",
+      fontWeight: 700
+    }
+  }, moveBirdIds.length ? `${fmtNum(moveBirdIds.length)} bird${moveBirdIds.length === 1 ? "" : "s"} selected` : filteredMoveSourceBirds.length ? "No birds selected yet" : "No filtered birds selected"), React.createElement("button", {
+    type: "button",
+    style: {
+      ...C.btn,
+      minWidth: 168,
+      opacity: moveSourcePenId && moveTargetPenId && moveBirdIds.length ? 1 : .6,
+      cursor: moveSourcePenId && moveTargetPenId && moveBirdIds.length ? "pointer" : "not-allowed"
+    },
+    disabled: !moveSourcePenId || !moveTargetPenId || !moveBirdIds.length,
+    onClick: saveMovedBirds
+  }, "Move Birds")));
 
   const addCtaLabel = screen === "pens" ? "Add New Pen" : screen === "types" ? "Add Feed Type" : "Add Feed Log";
   const primaryCta = React.createElement("button", {
     type: "button",
-    className: "pens-farm-add-btn",
+    className: "pens-farm-add-btn pens-farm-primary-btn",
     onClick: () => {
       if (screen === "pens") openPenForm();
       if (screen === "types") openAddFeedTypeForm();
@@ -1307,13 +1732,21 @@ function Pens({
     className: "pens-farm-header-actions"
   }, primaryCta, React.createElement("button", {
     type: "button",
-    className: "pens-farm-add-btn pens-farm-assign-btn",
+    className: "pens-farm-add-btn pens-farm-compact-btn",
     onClick: openAssignBirdsForm,
     title: "Assign birds to a pen",
     "aria-label": "Assign birds to a pen"
   }, React.createElement("span", {
     className: "pens-farm-assign-btn-icon"
-  }, "\uD83D\uDC14"), React.createElement("span", null, "Assign Birds"))) : primaryCta;
+  }, "\uD83D\uDC14"), React.createElement("span", null, "Assign")), React.createElement("button", {
+    type: "button",
+    className: "pens-farm-add-btn pens-farm-compact-btn",
+    onClick: openMoveBirdsForm,
+    title: "Move birds between pens",
+    "aria-label": "Move birds between pens"
+  }, React.createElement("span", {
+    className: "pens-farm-assign-btn-icon"
+  }, "\u21C4"), React.createElement("span", null, "Move"))) : primaryCta;
 
   return React.createElement("div", {
     style: C.body,
@@ -1839,5 +2272,5 @@ function Pens({
     type: "button",
     style: C.btn,
     onClick: saveFeedType
-  }, editingFeedTypeId ? "Save Changes" : "Save Feed Type")), feedLogModal, assignBirdsModal, themePickerModal);
+  }, editingFeedTypeId ? "Save Changes" : "Save Feed Type")), feedLogModal, assignBirdsModal, moveBirdsModal, themePickerModal);
 }
