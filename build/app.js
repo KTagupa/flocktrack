@@ -6546,6 +6546,7 @@ function App() {
     onAddPenFeedLog: addPenFeedLog,
     onDeletePenFeedLog: delPenFeedLog,
     onUpdatePen: updPen,
+    onUpdateBird: updBird,
     onOpenBird: openBirdRecord,
     openPenId: pendingPenOpenId,
     onOpenPenHandled: () => setPendingPenOpenId(""),

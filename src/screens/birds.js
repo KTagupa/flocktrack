@@ -402,6 +402,9 @@ function BirdsScreen({
   const [obBatch, setObBatch] = useState(outsiderSeed.batchNo);
   const [obIndiv, setObIndiv] = useState(outsiderSeed.indivNo);
   const [obCount, setObCount] = useState(1);
+  const [obBatchDraft, setObBatchDraft] = useState(() => String(outsiderSeed.batchNo));
+  const [obIndivDraft, setObIndivDraft] = useState(() => String(outsiderSeed.indivNo));
+  const [obCountDraft, setObCountDraft] = useState("1");
   const [tagAuto, setTagAuto] = useState(true);
   const [listPhotoPreview, setListPhotoPreview] = useState(null);
   const [recentPhotoCollapsed, setRecentPhotoCollapsed] = useState(false);
@@ -981,6 +984,12 @@ function BirdsScreen({
     const n = Number.parseInt(v, 10);
     return Number.isFinite(n) && n > 0 ? n : 1;
   };
+  const parseOptionalCodeNum = v => {
+    const text = String(v ?? "").trim();
+    if (!text) return null;
+    const n = Number.parseInt(text, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
   const findTagConflict = (tagId, excludeId = "") => {
     const key = normalizeTagId(tagId);
     if (!key) return null;
@@ -1213,12 +1222,17 @@ function BirdsScreen({
     setObBatch(seed.batchNo);
     setObIndiv(seed.indivNo);
     setObCount(1);
+    setObBatchDraft(String(seed.batchNo));
+    setObIndivDraft(String(seed.indivNo));
+    setObCountDraft("1");
     setTagAuto(true);
     setBf(makeBirdForm(outsiderTagCode(seed.batchNo, seed.indivNo)));
     setShowForm(true);
   }
   function updateOutsiderBatch(v) {
-    const n = parseCodeNum(v);
+    setObBatchDraft(v);
+    const n = parseOptionalCodeNum(v);
+    if (n == null) return;
     setObBatch(n);
     if (tagAuto) setBf(p => ({
       ...p,
@@ -1226,12 +1240,29 @@ function BirdsScreen({
     }));
   }
   function updateOutsiderIndiv(v) {
-    const n = parseCodeNum(v);
+    setObIndivDraft(v);
+    const n = parseOptionalCodeNum(v);
+    if (n == null) return;
     setObIndiv(n);
     if (tagAuto) setBf(p => ({
       ...p,
       tagId: outsiderTagCode(obBatch, n)
     }));
+  }
+  function updateOutsiderCount(v) {
+    setObCountDraft(v);
+    const n = parseOptionalCodeNum(v);
+    if (n == null) return;
+    setObCount(n);
+  }
+  function commitOutsiderBatchDraft() {
+    setObBatchDraft(String(obBatch));
+  }
+  function commitOutsiderIndivDraft() {
+    setObIndivDraft(String(obIndiv));
+  }
+  function commitOutsiderCountDraft() {
+    setObCountDraft(String(obCount));
   }
   function enableAutoTag() {
     setTagAuto(true);
@@ -3732,24 +3763,27 @@ function BirdsScreen({
     style: C.inp,
     type: "number",
     min: "1",
-    value: obBatch,
-    onChange: e => updateOutsiderBatch(e.target.value)
+    value: obBatchDraft,
+    onChange: e => updateOutsiderBatch(e.target.value),
+    onBlur: commitOutsiderBatchDraft
   })), React.createElement(FL, {
     lbl: "Start Bird #"
   }, React.createElement("input", {
     style: C.inp,
     type: "number",
     min: "1",
-    value: obIndiv,
-    onChange: e => updateOutsiderIndiv(e.target.value)
+    value: obIndivDraft,
+    onChange: e => updateOutsiderIndiv(e.target.value),
+    onBlur: commitOutsiderIndivDraft
   })), React.createElement(FL, {
     lbl: "How Many Birds"
   }, React.createElement("input", {
     style: C.inp,
     type: "number",
     min: "1",
-    value: obCount,
-    onChange: e => setObCount(parseCodeNum(e.target.value))
+    value: obCountDraft,
+    onChange: e => updateOutsiderCount(e.target.value),
+    onBlur: commitOutsiderCountDraft
   }))), React.createElement("div", {
     style: {
       display: "flex",
@@ -3924,6 +3958,8 @@ function BirdsScreen({
       const nextIndiv = obIndiv + saveCount;
       setObIndiv(nextIndiv);
       setObCount(1);
+      setObIndivDraft(String(nextIndiv));
+      setObCountDraft("1");
       setTagAuto(true);
       setBf(makeBirdForm(outsiderTagCode(obBatch, nextIndiv)));
       setShowForm(false);

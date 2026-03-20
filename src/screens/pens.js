@@ -1,4 +1,4 @@
-const { estimatePenFeedLog } = globalThis.FlockTrackLogic;
+const { estimatePenFeedLog, buildBirdPenUpdate } = globalThis.FlockTrackLogic;
 const PENS_SCREEN_NEST_CHICKS_ICON = typeof globalThis !== "undefined" && globalThis.FLOCK_TRACK_PENS_NEST_CHICKS_ICON ? globalThis.FLOCK_TRACK_PENS_NEST_CHICKS_ICON : "assets/icons/pens-nest-chicks-icon.png";
 
 const PEN_SCREEN_SLIDES = [{
@@ -277,6 +277,12 @@ function fmtFeedLoggedAt(value) {
   return /T\d{2}:\d{2}/.test(raw) ? fmtDateTime(raw) : fmtDate(raw);
 }
 
+function penBirdDetailLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace(/_/g, " ").replace(/\b\w/g, char => char.toUpperCase());
+}
+
 function latestPhotoWithImage(photos) {
   const list = Array.isArray(photos) ? photos : [];
   for (let idx = list.length - 1; idx >= 0; idx -= 1) {
@@ -299,6 +305,7 @@ function Pens({
   onAddPenFeedLog,
   onDeletePenFeedLog,
   onUpdatePen,
+  onUpdateBird,
   onDeletePen,
   onOpenBird,
   openPenId = "",
@@ -311,6 +318,9 @@ function Pens({
   const [showFeedTypeForm, setShowFeedTypeForm] = useState(false);
   const [editingFeedTypeId, setEditingFeedTypeId] = useState("");
   const [showFeedLogForm, setShowFeedLogForm] = useState(false);
+  const [showAssignBirdsForm, setShowAssignBirdsForm] = useState(false);
+  const [assignTargetPenId, setAssignTargetPenId] = useState("");
+  const [assignBirdIds, setAssignBirdIds] = useState([]);
   const [pensCarouselIndex, setPensCarouselIndex] = useState(0);
   const [expandedPenBirds, setExpandedPenBirds] = useState({});
   const [themePickerPenId, setThemePickerPenId] = useState("");
@@ -379,6 +389,7 @@ function Pens({
   }, [measurements]);
 
   const activeBirds = useMemo(() => sortBirdsByTag(birds.filter(bird => bird.status === "active")), [birds]);
+  const unassignedActiveBirds = useMemo(() => activeBirds.filter(bird => !bird.penId), [activeBirds]);
 
   const activeBirdsByPen = useMemo(() => {
     const map = new Map();
@@ -461,6 +472,23 @@ function Pens({
     setShowFeedTypeForm(false);
     setFeedTypeForm(emptyFeedTypeForm());
   }, [editingFeedTypeId, feedTypeById]);
+  useEffect(() => {
+    if (!showAssignBirdsForm) return;
+    if (!pens.length) {
+      if (assignTargetPenId) setAssignTargetPenId("");
+      return;
+    }
+    if (pens.some(pen => pen.id === assignTargetPenId)) return;
+    setAssignTargetPenId(currentPensCarouselPen?.id || pens[0]?.id || "");
+  }, [assignTargetPenId, currentPensCarouselPen, pens, showAssignBirdsForm]);
+  useEffect(() => {
+    if (!showAssignBirdsForm) return;
+    const assignableBirdIds = new Set(unassignedActiveBirds.map(bird => bird.id));
+    setAssignBirdIds(prev => {
+      const next = prev.filter(id => assignableBirdIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [showAssignBirdsForm, unassignedActiveBirds]);
 
   function stepPensCarousel(offset) {
     if (!pens.length) return;
@@ -503,6 +531,18 @@ function Pens({
       themeId: nextPenThemeId
     });
     setShowPenForm(true);
+  }
+
+  function closeAssignBirdsForm() {
+    setShowAssignBirdsForm(false);
+    setAssignTargetPenId("");
+    setAssignBirdIds([]);
+  }
+
+  function openAssignBirdsForm() {
+    setAssignTargetPenId(currentPensCarouselPen?.id || pens[0]?.id || "");
+    setAssignBirdIds([]);
+    setShowAssignBirdsForm(true);
   }
 
   function openAddFeedTypeForm() {
@@ -616,6 +656,62 @@ function Pens({
       ...prev,
       [penId]: !prev[penId]
     }));
+  }
+
+  function toggleAssignBird(birdId) {
+    if (!birdId) return;
+    setAssignBirdIds(prev => prev.includes(birdId) ? prev.filter(id => id !== birdId) : [...prev, birdId]);
+  }
+
+  function toggleAssignBirdsCheckAll() {
+    if (!unassignedActiveBirds.length) return;
+    const nextIds = unassignedActiveBirds.map(bird => bird.id);
+    setAssignBirdIds(prev => prev.length === nextIds.length ? [] : nextIds);
+  }
+
+  function saveAssignedBirds() {
+    if (typeof onUpdateBird !== "function") {
+      window.alert("Bird assignment is currently unavailable.");
+      return;
+    }
+    if (!assignTargetPenId) {
+      window.alert("Choose a pen first.");
+      return;
+    }
+    if (!assignBirdIds.length) {
+      window.alert("Select at least one bird to assign.");
+      return;
+    }
+    const selectedBirdIds = new Set(assignBirdIds);
+    const selectedBirds = unassignedActiveBirds.filter(bird => selectedBirdIds.has(bird.id));
+    if (!selectedBirds.length) {
+      window.alert("No unassigned active birds are available.");
+      return;
+    }
+    const updatedAt = new Date().toISOString();
+    const changeDate = today();
+    try {
+      selectedBirds.forEach(bird => {
+        const penUpdate = buildBirdPenUpdate({
+          bird,
+          nextPenId: assignTargetPenId,
+          nextStatus: bird.status || "active",
+          changeDate,
+          reason: "pen_assignment",
+          makeId: uid
+        });
+        onUpdateBird({
+          ...bird,
+          penId: penUpdate.penId,
+          penHistory: penUpdate.penHistory,
+          updatedAt
+        });
+      });
+      closeAssignBirdsForm();
+    } catch (err) {
+      console.error(err);
+      window.alert("Could not assign the selected birds. Please try again.");
+    }
   }
 
   function togglePenBirdVisualMode(pen) {
@@ -1007,7 +1103,214 @@ function Pens({
     className: "pens-farm-theme-modal-copy"
   }, "Selected: ", getPenTheme(selectedThemeId).name)));
 
+  const isAllAssignableBirdsChecked = !!unassignedActiveBirds.length && assignBirdIds.length === unassignedActiveBirds.length;
+  const assignBirdsModal = showAssignBirdsForm && React.createElement(Modal, {
+    title: "Assign Birds",
+    onClose: closeAssignBirdsForm
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#475569",
+      lineHeight: 1.45,
+      marginBottom: 14
+    }
+  }, "Pick a pen, check the active birds that are still unassigned, then save them together."), React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#475569",
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, "Pens"), !pens.length ? React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 14
+    }
+  }, "Add a pen first before assigning birds.") : React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
+      gap: 8,
+      marginBottom: 14
+    }
+  }, pens.map(pen => {
+    const activeCount = (activeBirdsByPen.get(pen.id) || []).length;
+    const isActive = assignTargetPenId === pen.id;
+    return React.createElement("button", {
+      key: `assign-pen-${pen.id}`,
+      type: "button",
+      onClick: () => setAssignTargetPenId(pen.id),
+      style: {
+        border: isActive ? "2px solid #4f772d" : "1px solid #cbd5e1",
+        background: isActive ? "#f3f9eb" : "#ffffff",
+        borderRadius: 14,
+        padding: "10px 12px",
+        textAlign: "left",
+        cursor: "pointer",
+        boxShadow: isActive ? "0 10px 18px -18px #4f772d" : "none"
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: "#0f172a"
+      }
+    }, pen.name || "Pen"), React.createElement("div", {
+      style: {
+        marginTop: 3,
+        fontSize: 12,
+        color: "#64748b"
+      }
+    }, pen.location || "No location"), React.createElement("div", {
+      style: {
+        marginTop: 6,
+        fontSize: 11,
+        fontWeight: 800,
+        color: isActive ? "#4f772d" : "#64748b",
+        textTransform: "uppercase",
+        letterSpacing: ".06em"
+      }
+    }, activeCount, " active"));
+  })), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      marginBottom: 8,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#475569",
+      textTransform: "uppercase",
+      letterSpacing: ".06em"
+    }
+  }, "Unassigned Birds"), React.createElement("label", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 13,
+      fontWeight: 700,
+      color: unassignedActiveBirds.length ? "#334155" : "#94a3b8",
+      cursor: unassignedActiveBirds.length ? "pointer" : "default"
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: isAllAssignableBirdsChecked,
+    disabled: !unassignedActiveBirds.length,
+    onChange: toggleAssignBirdsCheckAll
+  }), isAllAssignableBirdsChecked ? "Uncheck all" : "Check all")), !unassignedActiveBirds.length ? React.createElement("div", {
+    style: {
+      ...C.card,
+      marginBottom: 14
+    }
+  }, "All active birds already have a pen assigned.") : React.createElement("div", {
+    style: {
+      border: "1px solid #d9e3ef",
+      borderRadius: 16,
+      background: "#f8fafc",
+      maxHeight: 320,
+      overflowY: "auto",
+      marginBottom: 14
+    }
+  }, unassignedActiveBirds.map((bird, index) => {
+    const checked = assignBirdIds.includes(bird.id);
+    const nickname = String(bird.nickname || "").trim();
+    const birdName = nickname || bird.tagId || "Bird";
+    const birdMeta = [nickname && bird.tagId ? `Tag ${bird.tagId}` : "", penBirdDetailLabel(bird.stage), penBirdDetailLabel(bird.sex)].filter(Boolean).join(" · ");
+    return React.createElement("label", {
+      key: `assign-bird-${bird.id}`,
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "12px 14px",
+        cursor: "pointer",
+        background: checked ? "#eef6e8" : "transparent",
+        borderBottom: index === unassignedActiveBirds.length - 1 ? "none" : "1px solid #e2e8f0"
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked,
+      onChange: () => toggleAssignBird(bird.id),
+      style: {
+        marginTop: 2
+      }
+    }), React.createElement("div", {
+      style: {
+        minWidth: 0,
+        flex: 1
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 800,
+        color: "#0f172a",
+        lineHeight: 1.25,
+        wordBreak: "break-word"
+      }
+    }, birdName), React.createElement("div", {
+      style: {
+        marginTop: 4,
+        fontSize: 13,
+        color: "#64748b",
+        lineHeight: 1.35,
+        wordBreak: "break-word"
+      }
+    }, birdMeta || "Ready to assign")));
+  })), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#64748b",
+      fontWeight: 700
+    }
+  }, assignBirdIds.length ? `${fmtNum(assignBirdIds.length)} bird${assignBirdIds.length === 1 ? "" : "s"} selected` : "No birds selected yet"), React.createElement("button", {
+    type: "button",
+    style: {
+      ...C.btn,
+      minWidth: 168,
+      opacity: assignTargetPenId && assignBirdIds.length ? 1 : .6,
+      cursor: assignTargetPenId && assignBirdIds.length ? "pointer" : "not-allowed"
+    },
+    disabled: !assignTargetPenId || !assignBirdIds.length,
+    onClick: saveAssignedBirds
+  }, "Assign Birds")));
+
   const addCtaLabel = screen === "pens" ? "Add New Pen" : screen === "types" ? "Add Feed Type" : "Add Feed Log";
+  const primaryCta = React.createElement("button", {
+    type: "button",
+    className: "pens-farm-add-btn",
+    onClick: () => {
+      if (screen === "pens") openPenForm();
+      if (screen === "types") openAddFeedTypeForm();
+      if (screen === "feed") openFeedLogForm();
+    }
+  }, React.createElement("span", null, "+"), " ", addCtaLabel);
+  const headerActions = screen === "pens" ? React.createElement("div", {
+    className: "pens-farm-header-actions"
+  }, primaryCta, React.createElement("button", {
+    type: "button",
+    className: "pens-farm-add-btn pens-farm-assign-btn",
+    onClick: openAssignBirdsForm,
+    title: "Assign birds to a pen",
+    "aria-label": "Assign birds to a pen"
+  }, React.createElement("span", {
+    className: "pens-farm-assign-btn-icon"
+  }, "\uD83D\uDC14"), React.createElement("span", null, "Assign Birds"))) : primaryCta;
 
   return React.createElement("div", {
     style: C.body,
@@ -1024,15 +1327,7 @@ function Pens({
     alt: ""
   })), React.createElement("div", {
     className: "pens-farm-header-copy"
-  }, React.createElement("h1", null, "My Farm ", React.createElement("span", null, "Pens")), React.createElement("div", null, "Manage birds, feed logs, and feed types"))), React.createElement("button", {
-    type: "button",
-    className: "pens-farm-add-btn",
-    onClick: () => {
-      if (screen === "pens") openPenForm();
-      if (screen === "types") openAddFeedTypeForm();
-      if (screen === "feed") openFeedLogForm();
-    }
-  }, React.createElement("span", null, "+"), " ", addCtaLabel)), renderFarmTabs(), screen === "pens" && React.createElement("div", null, !pens.length && React.createElement("section", {
+  }, React.createElement("h1", null, "My Farm ", React.createElement("span", null, "Pens")), React.createElement("div", null, "Manage birds, feed logs, and feed types"))), screen === "pens" ? headerActions : primaryCta), renderFarmTabs(), screen === "pens" && React.createElement("div", null, !pens.length && React.createElement("section", {
     className: "pens-farm-empty-pen-card"
   }, React.createElement("div", {
     className: "pens-farm-empty-title"
@@ -1541,5 +1836,5 @@ function Pens({
     type: "button",
     style: C.btn,
     onClick: saveFeedType
-  }, editingFeedTypeId ? "Save Changes" : "Save Feed Type")), feedLogModal, themePickerModal);
+  }, editingFeedTypeId ? "Save Changes" : "Save Feed Type")), feedLogModal, assignBirdsModal, themePickerModal);
 }
